@@ -41,7 +41,7 @@ class FirmwareManager {
     const platformID = systemInformation.p;
 
     // GCC Platform skip OTA System
-    if(platformID==3){
+    if(platformID === 3){
       return null;
     }
 
