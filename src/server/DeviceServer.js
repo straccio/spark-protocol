@@ -347,6 +347,7 @@ class DeviceServer {
   _onDeviceReady = async (device: Device): Promise<void> => {
     try {
       logger.log('Device online!');
+      let uuid;
       const deviceID = device.getID();
 
       const existingAttributes =
@@ -361,9 +362,16 @@ class DeviceServer {
       );
 
       const description = await device.getDescription();
-      const { uuid } = FirmwareManager.getAppModule(
-        description.systemInformation,
-      );
+      // const { uuid } = FirmwareManager.getAppModule(
+      //   description.systemInformation,
+      // );
+      try {
+        uuid = FirmwareManager.getAppModule(
+          description.systemInformation,
+        )[0];
+      } catch (uuidErr) {
+        uuid = 'none';
+      }
 
       const deviceAttributes = {
         name: NAME_GENERATOR.choose(),
@@ -381,7 +389,14 @@ class DeviceServer {
       );
 
       // Send app-hash if this is a new app firmware
-      if (!existingAttributes || uuid !== existingAttributes.appHash) {
+      // if (!existingAttributes || uuid !== existingAttributes.appHash) {
+      if(
+        description.productID !== 3 &&
+        (
+          !existingAttributes ||
+          uuid !== existingAttributes.appHash
+        )
+      ){
         this.publishSpecialEvent(
           SYSTEM_EVENT_NAMES.APP_HASH,
           uuid,
