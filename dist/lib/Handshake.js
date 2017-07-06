@@ -28,12 +28,33 @@ var _ChunkingStream = require('./ChunkingStream');
 
 var _ChunkingStream2 = _interopRequireDefault(_ChunkingStream);
 
-var _logger = require('./logger');
+var _logger = require('../lib/logger');
 
 var _logger2 = _interopRequireDefault(_logger);
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
+/*
+*   Copyright (c) 2015 Particle Industries, Inc.  All rights reserved.
+*
+*   This program is free software; you can redistribute it and/or
+*   modify it under the terms of the GNU Lesser General Public
+*   License as published by the Free Software Foundation, either
+*   version 3 of the License, or (at your option) any later version.
+*
+*   This program is distributed in the hope that it will be useful,
+*   but WITHOUT ANY WARRANTY; without even the implied warranty of
+*   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+*   Lesser General Public License for more details.
+*
+*   You should have received a copy of the GNU Lesser General Public
+*   License along with this program; if not, see <http://www.gnu.org/licenses/>.
+*
+* 
+*
+*/
+
+var logger = _logger2.default.createModuleLogger(module);
 /*
  Handshake protocol v1
 
@@ -92,26 +113,7 @@ function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { de
  After the max uint32, the next message should set the counter to zero.
 */
 
-var NONCE_BYTES = 40; /*
-                      *   Copyright (c) 2015 Particle Industries, Inc.  All rights reserved.
-                      *
-                      *   This program is free software; you can redistribute it and/or
-                      *   modify it under the terms of the GNU Lesser General Public
-                      *   License as published by the Free Software Foundation, either
-                      *   version 3 of the License, or (at your option) any later version.
-                      *
-                      *   This program is distributed in the hope that it will be useful,
-                      *   but WITHOUT ANY WARRANTY; without even the implied warranty of
-                      *   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
-                      *   Lesser General Public License for more details.
-                      *
-                      *   You should have received a copy of the GNU Lesser General Public
-                      *   License along with this program; if not, see <http://www.gnu.org/licenses/>.
-                      *
-                      * 
-                      *
-                      */
-
+var NONCE_BYTES = 40;
 var ID_BYTES = 12;
 var SESSION_BYTES = 40;
 var GLOBAL_TIMEOUT = 10;
@@ -139,7 +141,7 @@ var Handshake = function Handshake(cryptoManager) {
                   ip: _this._socket && _this._socket.remoteAddress ? _this._socket.remoteAddress.toString() : 'unknown'
                 };
 
-                _logger2.default.error('Handshake failed: ', error, logInfo);
+                logger.error({ err: error, logInfo: logInfo }, 'Handshake failed');
 
                 throw error;
               }));
@@ -239,14 +241,13 @@ var Handshake = function Handshake(cryptoManager) {
           var _data = _this._socket.read();
 
           if (!_data) {
-            _logger2.default.log('onSocketData called, but no data sent.');
+            logger.error('onSocketData called, but no data sent.');
             reject(new Error('onSocketData called, but no data sent.'));
           }
 
           resolve(_data);
         } catch (error) {
-          _logger2.default.log('Handshake: Exception thrown while processing data');
-          _logger2.default.error(error);
+          logger.error({ err: error }, 'Handshake: Exception thrown while processing data');
           reject(error);
         }
 
@@ -268,9 +269,7 @@ var Handshake = function Handshake(cryptoManager) {
           case 2:
             nonce = _context3.sent;
 
-            process.nextTick(function () {
-              return _this._socket.write(nonce);
-            });
+            _this._socket.write(nonce);
 
             return _context3.abrupt('return', nonce);
 
@@ -351,7 +350,7 @@ var Handshake = function Handshake(cryptoManager) {
       var lines = ['-----BEGIN PUBLIC KEY-----'].concat((0, _toConsumableArray3.default)(bufferString.match(/.{1,64}/g) || []), ['-----END PUBLIC KEY-----']);
       return lines.join('\n');
     } catch (error) {
-      _logger2.default.error('error converting DER to PEM, was: ' + bufferString + ' ' + error);
+      logger.error({ bufferString: bufferString, err: error }, 'error converting DER to PEM');
     }
     return null;
   };
@@ -389,14 +388,23 @@ var Handshake = function Handshake(cryptoManager) {
               throw new Error('no public key found for device: ' + deviceID);
 
             case 9:
-
-              if (!_this._cryptoManager.keysEqual(publicKey, deviceProvidedPem)) {
-                _logger2.default.error('\n        TODO: KEY PASSED TO DEVICE DURING HANDSHAKE DOESN\'T MATCH SAVED\n        PUBLIC KEY');
+              if (publicKey.equals(deviceProvidedPem)) {
+                _context5.next = 14;
+                break;
               }
 
+              logger.error('TODO: KEY PASSED TO DEVICE DURING HANDSHAKE DOESNT MATCH SAVED PUBLIC KEY');
+
+              _context5.next = 13;
+              return _this._cryptoManager.createDevicePublicKey(deviceID, deviceProvidedPem);
+
+            case 13:
+              return _context5.abrupt('return', _context5.sent);
+
+            case 14:
               return _context5.abrupt('return', publicKey);
 
-            case 11:
+            case 15:
             case 'end':
               return _context5.stop();
           }
@@ -421,35 +429,29 @@ var Handshake = function Handshake(cryptoManager) {
 
             case 2:
               sessionKey = _context6.sent;
-              _context6.next = 5;
-              return _this._cryptoManager.encrypt(devicePublicKey, sessionKey);
 
-            case 5:
-              ciphertext = _context6.sent;
 
+              // Server RSA encrypts this 40-byte message using the Device's public key to
+              // create a 128-byte ciphertext.
+              ciphertext = devicePublicKey.encrypt(sessionKey);
 
               // Server creates a 20-byte HMAC of the ciphertext using SHA1 and the 40
               // bytes generated in the previous step as the HMAC key.
+
               hash = _this._cryptoManager.createHmacDigest(ciphertext, sessionKey);
 
               // Server signs the HMAC with its RSA private key generating a 256-byte
               // signature.
 
-              _context6.next = 9;
+              _context6.next = 7;
               return _this._cryptoManager.sign(hash);
 
-            case 9:
+            case 7:
               signedhmac = _context6.sent;
 
 
               // Server sends ~384 bytes to Device: the ciphertext then the signature.
               message = Buffer.concat([ciphertext, signedhmac], ciphertext.length + signedhmac.length);
-
-
-              process.nextTick(function () {
-                return _this._socket.write(message);
-              });
-
               decipherStream = _this._cryptoManager.createAESDecipherStream(sessionKey);
               cipherStream = _this._cryptoManager.createAESCipherStream(sessionKey);
 
@@ -473,9 +475,11 @@ var Handshake = function Handshake(cryptoManager) {
                 cipherStream.pipe(_this._socket);
               }
 
+              _this._socket.write(message);
+
               return _context6.abrupt('return', { cipherStream: cipherStream, decipherStream: decipherStream });
 
-            case 16:
+            case 14:
             case 'end':
               return _context6.stop();
           }

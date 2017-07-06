@@ -19,14 +19,15 @@
 */
 
 import type Device from '../clients/Device';
+import type DeviceKey from './DeviceKey';
 import type { Socket } from 'net';
 import type { Duplex } from 'stream';
 import type CryptoStream from './CryptoStream';
 import type CryptoManager from './CryptoManager';
 
 import ChunkingStream from './ChunkingStream';
-import logger from './logger';
-
+import Logger from '../lib/logger';
+const logger = Logger.createModuleLogger(module);
 /*
  Handshake protocol v1
 
@@ -120,12 +121,13 @@ class Handshake {
       const logInfo = {
         cache_key: this._device && this._device._connectionKey,
         deviceID: this._deviceID || null,
-        ip: this._socket && this._socket.remoteAddress
-          ? this._socket.remoteAddress.toString()
-          : 'unknown',
+        ip:
+          this._socket && this._socket.remoteAddress
+            ? this._socket.remoteAddress.toString()
+            : 'unknown',
       };
 
-      logger.error('Handshake failed: ', error, logInfo);
+      logger.error({ err: error, logInfo }, 'Handshake failed');
 
       throw error;
     });
@@ -135,17 +137,19 @@ class Handshake {
     const nonce = await this._sendNonce();
     const data = await this._onSocketDataAvailable();
 
-    const {
+    const { deviceID, deviceProvidedPem } = await this._readDeviceHandshakeData(
+      nonce,
+      data,
+    );
+    this._deviceID = deviceID;
+    const publicKey = await this._getDevicePublicKey(
       deviceID,
       deviceProvidedPem,
-    } = await this._readDeviceHandshakeData(nonce, data);
-    this._deviceID = deviceID;
-    const publicKey = await this._getDevicePublicKey(deviceID, deviceProvidedPem);
+    );
 
-    const {
-      cipherStream,
-      decipherStream,
-    } = await this._sendSessionKey(publicKey);
+    const { cipherStream, decipherStream } = await this._sendSessionKey(
+      publicKey,
+    );
 
     const handshakeBuffer = await Promise.race([
       this._onDecipherStreamReadable(decipherStream),
@@ -165,49 +169,50 @@ class Handshake {
   };
 
   _startGlobalTimeout = (): Promise<*> =>
-    new Promise((
-      resolve: (result: *) => void,
-      reject: (error: Error) => void,
-    ) => {
-      setTimeout(
-        (): void => reject(
-          new Error(`Handshake did not complete in ${GLOBAL_TIMEOUT} seconds`),
-        ),
-        GLOBAL_TIMEOUT * 1000,
-      );
-    });
-
+    new Promise(
+      (resolve: (result: *) => void, reject: (error: Error) => void) => {
+        setTimeout(
+          (): void =>
+            reject(
+              new Error(
+                `Handshake did not complete in ${GLOBAL_TIMEOUT} seconds`,
+              ),
+            ),
+          GLOBAL_TIMEOUT * 1000,
+        );
+      },
+    );
 
   _onSocketDataAvailable = (): Promise<Buffer> =>
-    new Promise((
-      resolve: (data: Buffer) => void,
-      reject: (error: Error) => void,
-    ) => {
-      const onReadable = () => {
-        try {
-          const data = ((this._socket.read(): any): Buffer);
+    new Promise(
+      (resolve: (data: Buffer) => void, reject: (error: Error) => void) => {
+        const onReadable = () => {
+          try {
+            const data = ((this._socket.read(): any): Buffer);
 
-          if (!data) {
-            logger.log('onSocketData called, but no data sent.');
-            reject(new Error('onSocketData called, but no data sent.'));
+            if (!data) {
+              logger.error('onSocketData called, but no data sent.');
+              reject(new Error('onSocketData called, but no data sent.'));
+            }
+
+            resolve(data);
+          } catch (error) {
+            logger.error(
+              { err: error },
+              'Handshake: Exception thrown while processing data',
+            );
+            reject(error);
           }
 
-          resolve(data);
-        } catch (error) {
-          logger.log('Handshake: Exception thrown while processing data');
-          logger.error(error);
-          reject(error);
-        }
-
-        this._socket.removeListener('readable', onReadable);
-      };
-      this._socket.on('readable', onReadable);
-    });
-
+          this._socket.removeListener('readable', onReadable);
+        };
+        this._socket.on('readable', onReadable);
+      },
+    );
 
   _sendNonce = async (): Promise<Buffer> => {
     const nonce = await this._cryptoManager.getRandomBytes(NONCE_BYTES);
-    process.nextTick((): boolean => this._socket.write(nonce));
+    this._socket.write(nonce);
 
     return nonce;
   };
@@ -225,7 +230,7 @@ class Handshake {
       throw new Error('handshake data decryption failed');
     }
 
-    if (decryptedHandshakeData.length < (NONCE_BYTES + ID_BYTES)) {
+    if (decryptedHandshakeData.length < NONCE_BYTES + ID_BYTES) {
       throw new Error(
         `handshake data was too small: ${decryptedHandshakeData.length}`,
       );
@@ -242,12 +247,12 @@ class Handshake {
       deviceIDBuffer,
       0,
       NONCE_BYTES,
-      (NONCE_BYTES + ID_BYTES),
+      NONCE_BYTES + ID_BYTES,
     );
     decryptedHandshakeData.copy(
       deviceKeyBuffer,
       0,
-      (NONCE_BYTES + ID_BYTES),
+      NONCE_BYTES + ID_BYTES,
       decryptedHandshakeData.length,
     );
 
@@ -260,7 +265,6 @@ class Handshake {
 
     return { deviceID, deviceProvidedPem };
   };
-
 
   /**
    * base64 encodes raw binary into
@@ -290,13 +294,10 @@ class Handshake {
       ];
       return lines.join('\n');
     } catch (error) {
-      logger.error(
-        `error converting DER to PEM, was: ${bufferString} ${error}`,
-      );
+      logger.error({ bufferString, err: error }, 'error converting DER to PEM');
     }
     return null;
   };
-
 
   _getDevicePublicKey = async (
     deviceID: string,
@@ -315,10 +316,14 @@ class Handshake {
       throw new Error(`no public key found for device: ${deviceID}`);
     }
 
-    if (!this._cryptoManager.keysEqual(publicKey, deviceProvidedPem)) {
-      logger.error(`
-        TODO: KEY PASSED TO DEVICE DURING HANDSHAKE DOESN'T MATCH SAVED
-        PUBLIC KEY`,
+    if (!publicKey.equals(deviceProvidedPem)) {
+      logger.error(
+        'TODO: KEY PASSED TO DEVICE DURING HANDSHAKE DOESNT MATCH SAVED PUBLIC KEY',
+      );
+
+      return await this._cryptoManager.createDevicePublicKey(
+        deviceID,
+        deviceProvidedPem,
       );
     }
 
@@ -326,7 +331,7 @@ class Handshake {
   };
 
   _sendSessionKey = async (
-    devicePublicKey: Object,
+    devicePublicKey: DeviceKey,
   ): Promise<{
     cipherStream: CryptoStream,
     decipherStream: CryptoStream,
@@ -335,10 +340,7 @@ class Handshake {
 
     // Server RSA encrypts this 40-byte message using the Device's public key to
     // create a 128-byte ciphertext.
-    const ciphertext = await this._cryptoManager.encrypt(
-      devicePublicKey,
-      sessionKey,
-    );
+    const ciphertext = devicePublicKey.encrypt(sessionKey);
 
     // Server creates a 20-byte HMAC of the ciphertext using SHA1 and the 40
     // bytes generated in the previous step as the HMAC key.
@@ -354,12 +356,10 @@ class Handshake {
       ciphertext.length + signedhmac.length,
     );
 
-    process.nextTick((): boolean => this._socket.write(message));
-
-    const decipherStream =
-      this._cryptoManager.createAESDecipherStream(sessionKey);
-    const cipherStream =
-      this._cryptoManager.createAESCipherStream(sessionKey);
+    const decipherStream = this._cryptoManager.createAESDecipherStream(
+      sessionKey,
+    );
+    const cipherStream = this._cryptoManager.createAESCipherStream(sessionKey);
 
     if (this._useChunkingStream) {
       const chunkingIn = new ChunkingStream({ outgoing: false });
@@ -379,6 +379,8 @@ class Handshake {
       cipherStream.pipe(this._socket);
     }
 
+    this._socket.write(message);
+
     return { cipherStream, decipherStream };
   };
 
@@ -394,10 +396,7 @@ class Handshake {
 
   _onDecipherStreamTimeout = (): Promise<*> =>
     new Promise((resolve: () => void, reject: () => void): number =>
-      setTimeout(
-        (): void => reject(),
-        DECIPHER_STREAM_TIMEOUT * 1000,
-      ),
+      setTimeout((): void => reject(), DECIPHER_STREAM_TIMEOUT * 1000),
     );
 }
 

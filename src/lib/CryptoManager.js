@@ -4,6 +4,7 @@ import type { IDeviceKeyRepository, ServerKeyRepository } from '../types';
 
 import crypto from 'crypto';
 import CryptoStream from './CryptoStream';
+import DeviceKey from './DeviceKey';
 import NodeRSA from 'node-rsa';
 
 const HASH_TYPE = 'sha1';
@@ -61,20 +62,16 @@ class CryptoManager {
   };
 
   _getServerPrivateKey = async (): Promise<NodeRSA> => {
-    const privateKeyString =
-      await this._serverKeyRepository.getPrivateKey();
+    const privateKeyString = await this._serverKeyRepository.getPrivateKey();
 
     if (!privateKeyString) {
       return await this._createServerKeys();
     }
 
-    return new NodeRSA(
-      privateKeyString,
-      {
-        encryptionScheme: 'pkcs1',
-        signingScheme: 'pkcs1',
-      },
-    );
+    return new NodeRSA(privateKeyString, {
+      encryptionScheme: 'pkcs1',
+      signingScheme: 'pkcs1',
+    });
   };
 
   createAESCipherStream = (sessionKey: Buffer): CryptoStream =>
@@ -83,10 +80,7 @@ class CryptoManager {
   createAESDecipherStream = (sessionKey: Buffer): CryptoStream =>
     this._createCryptoStream(sessionKey, false);
 
-  createHmacDigest = (
-    ciphertext: Buffer,
-    sessionKey: Buffer,
-  ): Buffer => {
+  createHmacDigest = (ciphertext: Buffer, sessionKey: Buffer): Buffer => {
     const hmac = crypto.createHmac(HASH_TYPE, sessionKey);
     hmac.update(ciphertext);
     return hmac.digest();
@@ -95,69 +89,57 @@ class CryptoManager {
   createDevicePublicKey = async (
     deviceID: string,
     publicKeyPem: string,
-  ): Promise<NodeRSA> => {
-    await this._deviceKeyRepository.updateByID(
+  ): Promise<DeviceKey> => {
+    let output = null;
+    let algorithm = 'ecc';
+    try {
+      algorithm = 'rsa';
+      output = new DeviceKey(algorithm, publicKeyPem);
+    } catch (ignore) {
+      output = new DeviceKey(algorithm, publicKeyPem);
+    }
+    await this._deviceKeyRepository.updateByID(deviceID, {
+      algorithm,
       deviceID,
-      { deviceID, key: publicKeyPem },
-    );
-    return new NodeRSA(
-      publicKeyPem,
-      'pkcs8-public-pem',
-      {
-        encryptionScheme: 'pkcs1',
-        signingScheme: 'pkcs1',
-      },
-    );
+      key: publicKeyPem,
+    });
+
+    return output;
   };
 
-  decrypt = (data: Buffer): Buffer =>
-    this._serverPrivateKey.decrypt(
-      data,
-    );
+  decrypt = (data: Buffer): Buffer => this._serverPrivateKey.decrypt(data);
 
-  encrypt = (publicKey: NodeRSA, data: Buffer): Buffer =>
-    publicKey.encrypt(
-      data,
-    );
-
-  getDevicePublicKey = async (deviceID: string): Promise<?Object> => {
+  getDevicePublicKey = async (deviceID: string): Promise<?DeviceKey> => {
     const publicKeyObject = await this._deviceKeyRepository.getByID(deviceID);
-    return publicKeyObject
-      ? new NodeRSA(
-        publicKeyObject.key,
-        'pkcs8-public-pem',
-        {
-          encryptionScheme: 'pkcs1',
-          signingScheme: 'pkcs1',
-        },
-      )
-      : null;
-  };
+    if (!publicKeyObject) {
+      return null;
+    }
 
-  keysEqual = (existingKey: NodeRSA, publicKeyPem: ? string): bool => existingKey.exportKey('pkcs8-public-pem') === publicKeyPem
+    return new DeviceKey(
+      // Default to rsa for devices that never set the algorithm
+      publicKeyObject.algorithm || 'rsa',
+      publicKeyObject.key,
+    );
+  };
 
   getRandomBytes = (size: number): Promise<Buffer> =>
-    new Promise((
-      resolve: (buffer: Buffer) => void,
-      reject: (error: Error) => void,
-    ) => {
-      crypto.randomBytes(
-        size,
-        (error: ?Error, buffer: Buffer) => {
+    new Promise(
+      (resolve: (buffer: Buffer) => void, reject: (error: Error) => void) => {
+        crypto.randomBytes(size, (error: ?Error, buffer: Buffer) => {
           if (error) {
             reject(error);
             return;
           }
 
           resolve(buffer);
-        },
-      );
-    });
+        });
+      },
+    );
 
   static getRandomUINT16 = (): number => {
     // ** - the same as Math.pow()
     const uintMax = 2 ** 16 - 1; // 65535
-    return Math.floor((Math.random() * uintMax) + 1);
+    return Math.floor(Math.random() * uintMax + 1);
   };
 
   sign = async (hash: Buffer): Promise<Buffer> =>

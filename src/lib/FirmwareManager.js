@@ -16,8 +16,8 @@ type OtaUpdate = {
 
 const platformSettings = Object.entries(specifications);
 const SPECIFICATION_KEY_BY_PLATFORM = new Map(
-  Object.values(settings.knownPlatforms).map(
-    (platform: mixed): [mixed, ?string] => {
+  Object.values(settings.knownPlatforms)
+    .map((platform: mixed): [mixed, ?string] => {
       const spec = platformSettings.find(
         // eslint-disable-next-line no-unused-vars
         ([key, value]: [string, mixed]): boolean =>
@@ -25,13 +25,12 @@ const SPECIFICATION_KEY_BY_PLATFORM = new Map(
       );
 
       return [platform, spec && spec[0]];
-    },
-  ).filter((item: [mixed, ?string]): boolean => !!item[1]),
+    })
+    .filter((item: [mixed, ?string]): boolean => !!item[1]),
 );
-const FIRMWARE_VERSION =
-  versions.find((version: Array<*>): boolean =>
-    version[1] === settings.versionNumber,
-  )[0];
+const FIRMWARE_VERSION = versions.find(
+  (version: Array<*>): boolean => version[1] === settings.versionNumber,
+)[0];
 
 class FirmwareManager {
   static getOtaSystemUpdateConfig = async (
@@ -41,11 +40,14 @@ class FirmwareManager {
     const platformID = systemInformation.p;
 
     // GCC Platform skip OTA System
-    if(platformID === 3){
-      return null;
-    }
+    // if(platformID === 3){
+    //   return null;
+    // }
+    //
+    // const modules = parser.getModules(systemInformation)
 
-    const modules = parser.getModules(systemInformation)
+    const modules = parser
+      .getModules(systemInformation)
       // Filter so we only have the system modules
       .filter((module: Object): boolean => module.func === 's');
 
@@ -92,7 +94,6 @@ class FirmwareManager {
       return null;
     }
 
-
     if (!key) {
       return null;
     }
@@ -103,18 +104,17 @@ class FirmwareManager {
     }
 
     const firmwareKeys = Object.keys(firmwareSettings);
-    return firmwareKeys.map(
-      (firmwareKey: string): Object => ({
-        ...specifications[key][firmwareKey],
-        binaryFileName: firmwareSettings[firmwareKey],
-      }),
-    );
+    return firmwareKeys.map((firmwareKey: string): Object => ({
+      ...specifications[key][firmwareKey],
+      binaryFileName: firmwareSettings[firmwareKey],
+    }));
   }
 
   static getAppModule = (systemInformation: Object): Object => {
     const parser = new HalDescribeParser();
     return nullthrows(
-      parser.getModules(systemInformation)
+      parser
+        .getModules(systemInformation)
         // Filter so we only have the app modules
         .find((module: Object): boolean => module.func === 'u'),
     );
@@ -122,7 +122,7 @@ class FirmwareManager {
 
   getKnownAppFileName = (): ?string => {
     throw new Error('getKnownAppFileName has not been implemented.');
-  }
+  };
 }
 
 export default FirmwareManager;

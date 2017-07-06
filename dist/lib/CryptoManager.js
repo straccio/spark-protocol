@@ -30,6 +30,10 @@ var _CryptoStream = require('./CryptoStream');
 
 var _CryptoStream2 = _interopRequireDefault(_CryptoStream);
 
+var _DeviceKey = require('./DeviceKey');
+
+var _DeviceKey2 = _interopRequireDefault(_DeviceKey);
+
 var _nodeRsa = require('node-rsa');
 
 var _nodeRsa2 = _interopRequireDefault(_nodeRsa);
@@ -134,20 +138,31 @@ var CryptoManager = (_temp = _class = function CryptoManager(deviceKeyRepository
 
   this.createDevicePublicKey = function () {
     var _ref3 = (0, _asyncToGenerator3.default)(_regenerator2.default.mark(function _callee3(deviceID, publicKeyPem) {
+      var output, algorithm;
       return _regenerator2.default.wrap(function _callee3$(_context3) {
         while (1) {
           switch (_context3.prev = _context3.next) {
             case 0:
-              _context3.next = 2;
-              return _this._deviceKeyRepository.updateByID(deviceID, { deviceID: deviceID, key: publicKeyPem });
+              output = null;
+              algorithm = 'ecc';
 
-            case 2:
-              return _context3.abrupt('return', new _nodeRsa2.default(publicKeyPem, 'pkcs8-public-pem', {
-                encryptionScheme: 'pkcs1',
-                signingScheme: 'pkcs1'
-              }));
+              try {
+                algorithm = 'rsa';
+                output = new _DeviceKey2.default(algorithm, publicKeyPem);
+              } catch (ignore) {
+                output = new _DeviceKey2.default(algorithm, publicKeyPem);
+              }
+              _context3.next = 5;
+              return _this._deviceKeyRepository.updateByID(deviceID, {
+                algorithm: algorithm,
+                deviceID: deviceID,
+                key: publicKeyPem
+              });
 
-            case 3:
+            case 5:
+              return _context3.abrupt('return', output);
+
+            case 6:
             case 'end':
               return _context3.stop();
           }
@@ -164,10 +179,6 @@ var CryptoManager = (_temp = _class = function CryptoManager(deviceKeyRepository
     return _this._serverPrivateKey.decrypt(data);
   };
 
-  this.encrypt = function (publicKey, data) {
-    return publicKey.encrypt(data);
-  };
-
   this.getDevicePublicKey = function () {
     var _ref4 = (0, _asyncToGenerator3.default)(_regenerator2.default.mark(function _callee4(deviceID) {
       var publicKeyObject;
@@ -180,12 +191,20 @@ var CryptoManager = (_temp = _class = function CryptoManager(deviceKeyRepository
 
             case 2:
               publicKeyObject = _context4.sent;
-              return _context4.abrupt('return', publicKeyObject ? new _nodeRsa2.default(publicKeyObject.key, 'pkcs8-public-pem', {
-                encryptionScheme: 'pkcs1',
-                signingScheme: 'pkcs1'
-              }) : null);
 
-            case 4:
+              if (publicKeyObject) {
+                _context4.next = 5;
+                break;
+              }
+
+              return _context4.abrupt('return', null);
+
+            case 5:
+              return _context4.abrupt('return', new _DeviceKey2.default(
+              // Default to rsa for devices that never set the algorithm
+              publicKeyObject.algorithm || 'rsa', publicKeyObject.key));
+
+            case 6:
             case 'end':
               return _context4.stop();
           }
@@ -197,10 +216,6 @@ var CryptoManager = (_temp = _class = function CryptoManager(deviceKeyRepository
       return _ref4.apply(this, arguments);
     };
   }();
-
-  this.keysEqual = function (existingKey, publicKeyPem) {
-    return existingKey.exportKey('pkcs8-public-pem') === publicKeyPem;
-  };
 
   this.getRandomBytes = function (size) {
     return new _promise2.default(function (resolve, reject) {

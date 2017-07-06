@@ -25,36 +25,36 @@ const SETTINGS_FILE = `${FILE_GEN_DIRECTORY}settings.json`;
 /* eslint-disable */
 const DEFAULT_SETTINGS = {
   knownApps: {
-		'deep_update_2014_06': true,
-		'cc3000': true,
-		'cc3000_1_14': true,
-		'tinker': true,
-		'voodoo': true
-	},
-	knownPlatforms: {
-		'0': 'Core',
-		'6': 'Photon',
-		'8': 'P1',
-		'10': 'Electron',
-		'88': 'Duo',
-		'103': 'Bluz'
-	},
-	updates: {
-		'2b04:d006': {
-			systemFirmwareOne: 'system-part1-0.6.0-photon.bin',
-			systemFirmwareTwo: 'system-part2-0.6.0-photon.bin'
-		},
-		'2b04:d008': {
-			systemFirmwareOne: 'system-part1-0.6.0-p1.bin',
-			systemFirmwareTwo: 'system-part2-0.6.0-p1.bin'
-		},
-		'2b04:d00a': {
-			// The bin files MUST be in this order to be flashed to the correct memory locations
-			systemFirmwareOne:   'system-part2-0.6.0-electron.bin',
-			systemFirmwareTwo:   'system-part3-0.6.0-electron.bin',
-			systemFirmwareThree: 'system-part1-0.6.0-electron.bin'
-		}
-	},
+    deep_update_2014_06: true,
+    cc3000: true,
+    cc3000_1_14: true,
+    tinker: true,
+    voodoo: true,
+  },
+  knownPlatforms: {
+    '0': 'Core',
+    '6': 'Photon',
+    '8': 'P1',
+    '10': 'Electron',
+    '88': 'Duo',
+    '103': 'Bluz',
+  },
+  updates: {
+    '2b04:d006': {
+      systemFirmwareOne: 'system-part1-0.6.0-photon.bin',
+      systemFirmwareTwo: 'system-part2-0.6.0-photon.bin',
+    },
+    '2b04:d008': {
+      systemFirmwareOne: 'system-part1-0.6.0-p1.bin',
+      systemFirmwareTwo: 'system-part2-0.6.0-p1.bin',
+    },
+    '2b04:d00a': {
+      // The bin files MUST be in this order to be flashed to the correct memory locations
+      systemFirmwareOne: 'system-part2-0.6.0-electron.bin',
+      systemFirmwareTwo: 'system-part3-0.6.0-electron.bin',
+      systemFirmwareThree: 'system-part1-0.6.0-electron.bin',
+    },
+  },
 };
 /* eslint-enable */
 
@@ -82,7 +82,6 @@ const downloadFile = (url: string): Promise<*> =>
     file.on('finish', (): void => file.close((): void => resolve(filename)));
     request(url).pipe(file).on('error', exitWithJSON);
   });
-
 
 const downloadFirmwareBinaries = async (
   assets: Array<Asset>,
@@ -139,7 +138,7 @@ const verifyBinariesMatch = (
     JSON.stringify(settingsBinaries.sort())
   ) {
     console.log(
-      '\n\nWARNING: the list of downloaded binaries doesn\'t match the list ' +
+      "\n\nWARNING: the list of downloaded binaries doesn't match the list " +
         'of binaries in settings.js',
     );
     console.log('Downloaded:  ', downloadedBinaries);
@@ -155,9 +154,8 @@ const downloadAppBinaries = async (): Promise<*> => {
   });
 
   return await Promise.all(
-    assets.map(
-      (asset: Object): Promise<string> =>
-        downloadFile(asset.download_url),
+    assets.map((asset: Object): Promise<string> =>
+      downloadFile(asset.download_url),
     ),
   );
 };
@@ -188,11 +186,12 @@ const downloadAppBinaries = async (): Promise<*> => {
       perPage: 30,
       repo: GITHUB_FIRMWARE_REPOSITORY,
     });
-    releases = releases.filter((release: Object): boolean =>
-      // Don't use release candidates.. we only need main releases.
-      !release.tag_name.includes('-rc') &&
-      !release.tag_name.includes('-pi') &&
-      release.assets.length > 2,
+    releases = releases.filter(
+      (release: Object): boolean =>
+        // Don't use release candidates.. we only need main releases.
+        !release.tag_name.includes('-rc') &&
+        !release.tag_name.includes('-pi') &&
+        release.assets.length > 2,
     );
 
     releases.sort((a: Object, b: Object): number => {
@@ -235,25 +234,26 @@ const downloadAppBinaries = async (): Promise<*> => {
     repo: GITHUB_FIRMWARE_REPOSITORY,
   });
 
-  const versionText = new Buffer(versionResponse.content, 'base64').toString();
-  const startIndex = versionText.indexOf('| 0 ');
-  const endIndex = versionText.indexOf('\n\n', startIndex);
+  const versionText =
+    new Buffer(versionResponse.content, 'base64').toString() || '';
   const data = versionText
-    .substring(startIndex, endIndex)
-    .replace(/\s/g, '')
-    .split('|');
-
-  const mapping = [];
-  for (let ii = 0; ii < data.length; ii += 4) {
-    if (!data[ii + 1]) {
-      continue; // eslint-disable-line no-continue
-    }
-    mapping.push([data[ii + 1], data[ii + 2]]);
+    .match(/^\|[^\n]*/gim)
+    .map((line: string): Array<string> => line.split('|').slice(2, 5))
+    .filter((arr: Array<string>): boolean => !isNaN(parseInt(arr[0], 10)))
+    .map((vdata: Array<any>): Array => [
+      vdata[0].replace(/\s+/g, ''),
+      vdata[1].replace(/\s+/g, ''),
+    ]);
+  if (data.length === 0) {
+    console.log(
+      'cant parse system-versions from https://github.com/spark/firmware/blob/develop/system/system-versions.md',
+    );
   }
-  fs.writeFileSync(
-    MAPPING_FILE,
-    JSON.stringify(mapping, null, 2),
-  );
+  const mapping = [];
+  for (let line = 0; line < data.length; line += 1) {
+    mapping.push(data[line]);
+  }
+  fs.writeFileSync(MAPPING_FILE, JSON.stringify(mapping, null, 2));
 
   console.log('\r\nCompleted Sync');
 })();

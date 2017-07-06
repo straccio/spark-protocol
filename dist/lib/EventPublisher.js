@@ -17,6 +17,10 @@ var _asyncToGenerator2 = require('babel-runtime/helpers/asyncToGenerator');
 
 var _asyncToGenerator3 = _interopRequireDefault(_asyncToGenerator2);
 
+var _setImmediate2 = require('babel-runtime/core-js/set-immediate');
+
+var _setImmediate3 = _interopRequireDefault(_setImmediate2);
+
 var _extends2 = require('babel-runtime/helpers/extends');
 
 var _extends3 = _interopRequireDefault(_extends2);
@@ -45,9 +49,9 @@ var _events = require('events');
 
 var _events2 = _interopRequireDefault(_events);
 
-var _nullthrows2 = require('nullthrows');
+var _nullthrows = require('nullthrows');
 
-var _nullthrows3 = _interopRequireDefault(_nullthrows2);
+var _nullthrows2 = _interopRequireDefault(_nullthrows);
 
 var _uuid = require('uuid');
 
@@ -81,7 +85,6 @@ var getRequestEventName = exports.getRequestEventName = function getRequestEvent
    *
    */
 
-var ALL_EVENTS = '*all*';
 var LISTEN_FOR_RESPONSE_TIMEOUT = 15000;
 
 var EventPublisher = function (_EventEmitter) {
@@ -100,16 +103,22 @@ var EventPublisher = function (_EventEmitter) {
     }
 
     return _ret = (_temp = (_this = (0, _possibleConstructorReturn3.default)(this, (_ref = EventPublisher.__proto__ || (0, _getPrototypeOf2.default)(EventPublisher)).call.apply(_ref, [this].concat(args))), _this), _this._subscriptionsByID = new _map2.default(), _this.publish = function (eventData) {
+      var options = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : {
+        isInternal: false,
+        isPublic: false
+      };
+
       var ttl = eventData.ttl && eventData.ttl > 0 ? eventData.ttl : _settings2.default.DEFAULT_EVENT_TTL;
 
-      var event = (0, _extends3.default)({}, eventData, {
+      var event = (0, _extends3.default)({}, eventData, options, {
         publishedAt: new Date(),
         ttl: ttl
       });
 
-      // TODO - this needs to be put on next tick.
-      _this._emitWithPrefix(eventData.name, event);
-      _this.emit(ALL_EVENTS, event);
+      (0, _setImmediate3.default)(function () {
+        _this._emitWithPrefix(eventData.name, event);
+        _this.emit('*', event);
+      });
     }, _this.publishAndListenForResponse = function () {
       var _ref2 = (0, _asyncToGenerator3.default)(_regenerator2.default.mark(function _callee(eventData) {
         var eventID, requestEventName, responseEventName;
@@ -122,7 +131,7 @@ var EventPublisher = function (_EventEmitter) {
                 responseEventName = eventData.name + '/response/' + eventID;
                 return _context.abrupt('return', new _promise2.default(function (resolve, reject) {
                   var responseListener = function responseListener(event) {
-                    return resolve((0, _nullthrows3.default)(event.context));
+                    return resolve((0, _nullthrows2.default)(event.context));
                   };
 
                   _this.subscribe(responseEventName, responseListener, {
@@ -137,9 +146,11 @@ var EventPublisher = function (_EventEmitter) {
                     context: (0, _extends3.default)({}, eventData.context, {
                       responseEventName: responseEventName
                     }),
-                    isPublic: false,
                     name: requestEventName
-                  }));
+                  }), {
+                    isInternal: true,
+                    isPublic: false
+                  });
                 }));
 
               case 4:
@@ -150,11 +161,11 @@ var EventPublisher = function (_EventEmitter) {
         }, _callee, _this2);
       }));
 
-      return function (_x) {
+      return function (_x2) {
         return _ref2.apply(this, arguments);
       };
     }(), _this.subscribe = function () {
-      var eventNamePrefix = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : ALL_EVENTS;
+      var eventNamePrefix = arguments.length > 0 && arguments[0] !== undefined ? arguments[0] : '*';
       var eventHandler = arguments[1];
       var options = arguments.length > 2 && arguments[2] !== undefined ? arguments[2] : {};
       var filterOptions = options.filterOptions,
@@ -184,25 +195,26 @@ var EventPublisher = function (_EventEmitter) {
             timeoutHandler();
           }
         }, subscriptionTimeout);
-
         _this.once(eventNamePrefix, function () {
           return clearTimeout(timeout);
         });
       }
 
       if (once) {
-        _this.once(eventNamePrefix, listener);
+        _this.once(eventNamePrefix, function (event) {
+          _this._subscriptionsByID.delete(subscriptionID);
+          listener(event);
+        });
       } else {
         _this.on(eventNamePrefix, listener);
       }
-
       return subscriptionID;
     }, _this.unsubscribe = function (subscriptionID) {
-      var _nullthrows = (0, _nullthrows3.default)(_this._subscriptionsByID.get(subscriptionID)),
-          eventNamePrefix = _nullthrows.eventNamePrefix,
-          listener = _nullthrows.listener;
-
-      _this.removeListener(eventNamePrefix, listener);
+      var subscription = _this._subscriptionsByID.get(subscriptionID);
+      if (!subscription) {
+        return;
+      }
+      _this.removeListener(subscription.eventNamePrefix, subscription.listener);
       _this._subscriptionsByID.delete(subscriptionID);
     }, _this.unsubscribeBySubscriberID = function (subscriberID) {
       _this._subscriptionsByID.forEach(function (subscription) {
@@ -218,8 +230,11 @@ var EventPublisher = function (_EventEmitter) {
       });
     }, _this._filterEvents = function (eventHandler, filterOptions) {
       return function (event) {
+        if (event.isInternal && filterOptions.listenToInternalEvents === false) {
+          return;
+        }
         // filter private events from another devices
-        if (!event.isPublic && filterOptions.userID !== event.userID) {
+        if (filterOptions.userID && !event.isPublic && filterOptions.userID !== event.userID) {
           return;
         }
 
@@ -235,6 +250,11 @@ var EventPublisher = function (_EventEmitter) {
 
         // filter event by deviceID
         if (filterOptions.deviceID && event.deviceID !== filterOptions.deviceID) {
+          return;
+        }
+
+        // filter broadcasted events
+        if (filterOptions.listenToBroadcastedEvents === false && event.broadcasted) {
           return;
         }
 

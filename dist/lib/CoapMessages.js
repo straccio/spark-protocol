@@ -77,6 +77,8 @@ var _logger2 = _interopRequireDefault(_logger);
 
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
+var logger = _logger2.default.createModuleLogger(module);
+
 var _getRouteKey = function _getRouteKey(code, path) {
   var uri = code + path;
   var idx = uri.indexOf('/');
@@ -189,15 +191,17 @@ function (_ref) {
   try {
     var specification = CoapMessages._specifications.get(messageName);
     if (!specification) {
-      _logger2.default.error('Unknown Message Type');
+      logger.error({ messageName: messageName }, 'Unknown Message Type');
       return null;
     }
 
     // Format our url
     var uri = specification.uri;
     var queryParams = [];
-    if (params && specification.template) {
-      uri = specification.template.render(params);
+    if (params) {
+      if (specification.template) {
+        uri = specification.template.render(params);
+      }
       queryParams = (params.args || []).map(function (value) {
         return {
           name: _CoapMessage2.default.Option.URI_QUERY,
@@ -230,7 +234,7 @@ function (_ref) {
       token: token && Buffer.from([token])
     }));
   } catch (error) {
-    console.error(error);
+    logger.error({ err: error }, 'Coap Error');
   }
   return null;
 }, _class.unwrap = function (data) {
@@ -241,7 +245,7 @@ function (_ref) {
   try {
     return _coapPacket2.default.parse(data);
   } catch (error) {
-    _logger2.default.error('Coap Error: ' + error);
+    logger.error({ err: error }, 'Coap Error');
   }
 
   return null;
@@ -292,7 +296,7 @@ function (_ref) {
 
     default:
       {
-        _logger2.default.error('asked for unknown type: ' + typeInt);
+        logger.error({ typeInt: typeInt }, 'asked for unknown type');
         throw new Error('error getNameFromTypeInt: ' + typeInt);
       }
   }
@@ -301,7 +305,7 @@ function (_ref) {
   try {
     result = CoapMessages.fromBinary(buffer, typeName);
   } catch (error) {
-    _logger2.default.error('Could not parse type: ' + typeName + ' ' + buffer.toString() + ' ' + error);
+    logger.error({ buffer: buffer.toString(), err: error, typeName: typeName }, 'Could not parse type');
   }
   return result;
 }, _class.fromBinary = function (buffer, typeName) {
@@ -369,33 +373,39 @@ function (_ref) {
   }
 
   switch (typeName) {
+    case 'uint8':
+      {
+        var buffer = Buffer.allocUnsafe(1);
+        buffer.writeUInt8(value, 0);
+        return buffer;
+      }
     case 'uint16':
       {
-        var buffer = Buffer.allocUnsafe(2);
-        buffer.writeUInt16BE(value, 0);
-        return buffer;
+        var _buffer = Buffer.allocUnsafe(2);
+        _buffer.writeUInt16BE(value, 0);
+        return _buffer;
       }
     case 'uint32':
     case 'crc':
       {
-        var _buffer = Buffer.allocUnsafe(4);
-        _buffer.writeUInt32BE(value, 0);
-        return _buffer;
+        var _buffer2 = Buffer.allocUnsafe(4);
+        _buffer2.writeUInt32BE(value, 0);
+        return _buffer2;
       }
 
     case 'int32':
       {
-        var _buffer2 = Buffer.allocUnsafe(4);
-        _buffer2.writeInt32BE(value, 0);
-        return _buffer2;
+        var _buffer3 = Buffer.allocUnsafe(4);
+        _buffer3.writeInt32BE(value, 0);
+        return _buffer3;
       }
 
     case 'number':
     case 'double':
       {
-        var _buffer3 = Buffer.allocUnsafe(4);
-        _buffer3.writeDoubleLE(value, 0);
-        return _buffer3;
+        var _buffer4 = Buffer.allocUnsafe(4);
+        _buffer4.writeDoubleLE(value, 0);
+        return _buffer4;
       }
 
     case 'buffer':

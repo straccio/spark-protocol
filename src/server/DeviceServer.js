@@ -19,14 +19,18 @@
 */
 
 import type { Socket } from 'net';
-import type { Event, IDeviceAttributeRepository } from '../types';
+import type {
+  Event,
+  EventData,
+  IDeviceAttributeRepository,
+  PublishOptions,
+} from '../types';
 import type ClaimCodeManager from '../lib/ClaimCodeManager';
 import type CryptoManager from '../lib/CryptoManager';
 import type EventPublisher from '../lib/EventPublisher';
 
 import Handshake from '../lib/Handshake';
 
-import chalk from 'chalk';
 import net from 'net';
 import crypto from 'crypto';
 import nullthrows from 'nullthrows';
@@ -35,15 +39,17 @@ import Moniker from 'moniker';
 import Device from '../clients/Device';
 
 import FirmwareManager from '../lib/FirmwareManager';
-import logger from '../lib/logger';
 import CoapMessages from '../lib/CoapMessages';
 import { getRequestEventName } from '../lib/EventPublisher';
 import SPARK_SERVER_EVENTS from '../lib/SparkServerEvents';
 import {
   DEVICE_EVENT_NAMES,
   DEVICE_MESSAGE_EVENTS_NAMES,
+  DEVICE_STATUS_MAP,
   SYSTEM_EVENT_NAMES,
 } from '../clients/Device';
+import Logger from '../lib/logger';
+const logger = Logger.createModuleLogger(module);
 
 type DeviceServerConfig = {|
   HOST: string,
@@ -84,8 +90,7 @@ class DeviceServer {
     this._cryptoManager = cryptoManager;
     this._claimCodeManager = claimCodeManager;
     this._eventPublisher = eventPublisher;
-    this._areSystemFirmwareAutoupdatesEnabled =
-      areSystemFirmwareAutoupdatesEnabled;
+    this._areSystemFirmwareAutoupdatesEnabled = areSystemFirmwareAutoupdatesEnabled;
   }
 
   start() {
@@ -100,8 +105,8 @@ class DeviceServer {
     );
 
     this._eventPublisher.subscribe(
-      getRequestEventName(SPARK_SERVER_EVENTS.GET_DEVICE_DESCRIPTION),
-      this._onSparkServerGetDeviceDescriptionRequest,
+      getRequestEventName(SPARK_SERVER_EVENTS.GET_DEVICE_ATTRIBUTES),
+      this._onSparkServerGetDeviceAttributes,
     );
 
     this._eventPublisher.subscribe(
@@ -119,44 +124,42 @@ class DeviceServer {
       this._onSparkServerRaiseYourHandRequest,
     );
 
-    const server = net.createServer(
-      (socket: Socket): void =>
-        process.nextTick((): Promise<void> =>
-          this._onNewSocketConnection(socket),
-        ),
+    this._eventPublisher.subscribe(
+      getRequestEventName(SPARK_SERVER_EVENTS.UPDATE_DEVICE_ATTRIBUTES),
+      this._onSparkServerUpdateDeviceAttributesRequest,
+    );
+
+    const server = net.createServer((socket: Socket): void =>
+      process.nextTick((): Promise<void> =>
+        this._onNewSocketConnection(socket),
+      ),
     );
 
     setInterval(
-      (): void => server.getConnections((error: Error, count: number) => {
-        logger.info(
-          `Connected Devices ${chalk.green(this._devicesById.size)}`,
-          ` - Sockets ${chalk.green(count)} `,
-        );
-      }),
+      (): void =>
+        server.getConnections((error: Error, count: number) => {
+          logger.info(
+            { devices: this._devicesById.size, sockets: count },
+            'Connected Devices',
+          );
+        }),
       10000,
     );
 
     server.on('error', (error: Error): void =>
-      logger.error(`something blew up ${error.message}`),
+      logger.error({ err: error }, 'something blew up'),
     );
 
     const serverPort = this._config.PORT.toString();
-    server.listen(
-      serverPort,
-      (): void => logger.log(`Server started on port: ${serverPort}`),
+    server.listen(serverPort, (): void =>
+      logger.info({ serverPort }, 'Server started'),
     );
   }
 
-  _updateDeviceSystemFirmware = async (
-    device: Device,
-    ownerID: ?string,
-  ): Promise<void> => {
-    const description = await device.getDescription();
-    const systemInformation = description.systemInformation;
-    if (!systemInformation) {
-      return;
-    }
-    const deviceID = device.getID();
+  _updateDeviceSystemFirmware = async (device: Device): Promise<void> => {
+    await device.hasStatus(DEVICE_STATUS_MAP.READY);
+    const { deviceID, ownerID } = device.getAttributes();
+    const systemInformation = device.getSystemInformation();
 
     const config = await FirmwareManager.getOtaSystemUpdateConfig(
       systemInformation,
@@ -165,20 +168,18 @@ class DeviceServer {
       return;
     }
 
-    setTimeout(
-      async (): Promise<void> => {
-        this.publishSpecialEvent(
-          SYSTEM_EVENT_NAMES.SAFE_MODE_UPDATING,
-          // Lets the user know if it's the system update part 1/2/3
-          config.moduleIndex + 1,
-          deviceID,
-          ownerID,
-        );
+    setTimeout(async (): Promise<void> => {
+      this.publishSpecialEvent(
+        SYSTEM_EVENT_NAMES.SAFE_MODE_UPDATING,
+        // Lets the user know if it's the system update part 1/2/3
+        config.moduleIndex + 1,
+        deviceID,
+        ownerID,
+        false,
+      );
 
-        await device.flash(config.systemFile);
-      },
-      1000,
-    );
+      await device.flash(config.systemFile);
+    }, 1000);
   };
 
   _onNewSocketConnection = async (socket: Socket): Promise<void> => {
@@ -187,23 +188,23 @@ class DeviceServer {
       const counter = connectionIdCounter;
       const connectionKey = `_${connectionIdCounter}`;
       const handshake = new Handshake(this._cryptoManager);
-      const device = new Device(
-        socket,
-        connectionKey,
-        handshake,
-      );
+      const device = new Device(socket, connectionKey, handshake);
 
       const deviceID = await device.startProtocolInitialization();
 
+      logger.info(
+        {
+          connectionID: counter,
+          deviceID,
+          remoteIPAddress: device.getRemoteIPAddress(),
+        },
+        'Connection',
+      );
+
       process.nextTick(async (): Promise<void> => {
         try {
-          const deviceAttributes =
-            await this._deviceAttributeRepository.getByID(device.getID());
-          const ownerID = deviceAttributes && deviceAttributes.ownerID;
-
-          device.on(
-            DEVICE_EVENT_NAMES.DISCONNECT,
-            (): Promise<void> => this._onDeviceDisconnect(device),
+          device.on(DEVICE_EVENT_NAMES.DISCONNECT, (): Promise<void> =>
+            this._onDeviceDisconnect(device),
           );
 
           device.on(
@@ -215,91 +216,157 @@ class DeviceServer {
           device.on(
             DEVICE_MESSAGE_EVENTS_NAMES.PRIVATE_EVENT,
             (packet: CoapPacket): Promise<void> =>
-              this._onDeviceSentMessage(
-                packet,
-                /* isPublic*/ false,
-                device,
-              ),
+              this._onDeviceSentMessage(packet, /* isPublic*/ false, device),
           );
 
           device.on(
             DEVICE_MESSAGE_EVENTS_NAMES.PUBLIC_EVENT,
             (packet: CoapPacket): Promise<void> =>
-              this._onDeviceSentMessage(
-                packet,
-                /* isPublic*/ true,
-                device,
-              ),
+              this._onDeviceSentMessage(packet, /* isPublic*/ true, device),
           );
 
           device.on(
             DEVICE_MESSAGE_EVENTS_NAMES.GET_TIME,
-            (packet: CoapPacket): void =>
-              this._onDeviceGetTime(packet, device),
+            (packet: CoapPacket): void => this._onDeviceGetTime(packet, device),
           );
 
-          device.on(
-            DEVICE_EVENT_NAMES.FLASH_STARTED,
-            (): void => this.publishSpecialEvent(
+          // TODO in the next 3 subscriptions for flashing events
+          // there is code duplication, its not clean, but
+          // i guess we'll remove these subscription soon anyways
+          // so I keep it like this for now.
+          device.on(DEVICE_EVENT_NAMES.FLASH_STARTED, async (): Promise<
+            void,
+          > => {
+            await device.hasStatus(DEVICE_STATUS_MAP.READY);
+            const { ownerID } = device.getAttributes();
+            this.publishSpecialEvent(
               SYSTEM_EVENT_NAMES.FLASH_STATUS,
               'started',
               deviceID,
               ownerID,
-            ),
-          );
+              false,
+            );
+          });
 
-          device.on(
-            DEVICE_EVENT_NAMES.FLASH_SUCCESS,
-            (): void => this.publishSpecialEvent(
+          device.on(DEVICE_EVENT_NAMES.FLASH_SUCCESS, async (): Promise<
+            void,
+          > => {
+            await device.hasStatus(DEVICE_STATUS_MAP.READY);
+            const { ownerID } = device.getAttributes();
+            this.publishSpecialEvent(
               SYSTEM_EVENT_NAMES.FLASH_STATUS,
               'success',
               deviceID,
               ownerID,
-            ),
-          );
+              false,
+            );
+          });
 
-          device.on(
-            DEVICE_EVENT_NAMES.FLASH_FAILED,
-            (): void => this.publishSpecialEvent(
+          device.on(DEVICE_EVENT_NAMES.FLASH_FAILED, async (): Promise<
+            void,
+          > => {
+            await device.hasStatus(DEVICE_STATUS_MAP.READY);
+            const { ownerID } = device.getAttributes();
+            this.publishSpecialEvent(
               SYSTEM_EVENT_NAMES.FLASH_STATUS,
               'failed',
               deviceID,
               ownerID,
-            ),
-          );
+              false,
+            );
+          });
 
           if (this._devicesById.has(deviceID)) {
             const existingConnection = this._devicesById.get(deviceID);
             nullthrows(existingConnection).disconnect(
-              'Device was already connected. Reconnecting.\r\n',
+              'Device was already connected. Reconnecting.',
             );
           }
 
           this._devicesById.set(deviceID, device);
 
-          device.completeProtocolInitialization();
-          this._onDeviceReady(device);
-
-          logger.info(
-            `Connection from: ${device.getRemoteIPAddress()} - ` +
-              `Device ID: ${deviceID}`,
-              `Connection ID: ${counter}`,
+          const systemInformation = await device.completeProtocolInitialization();
+          // const appHash="";
+          // try {
+          const { uuid: appHash } = FirmwareManager.getAppModule(
+            systemInformation,
           );
+          // }catch (ignore){
+
+          // }
+
+          const existingAttributes = await this._deviceAttributeRepository.getByID(
+            deviceID,
+          );
+
+          const {
+            claimCode,
+            currentBuildTarget,
+            imei,
+            isCellular,
+            last_iccid,
+            name,
+            ownerID,
+            registrar,
+          } =
+            existingAttributes || {};
+
+          device.updateAttributes({
+            appHash,
+            claimCode,
+            currentBuildTarget,
+            imei,
+            isCellular,
+            last_iccid,
+            lastHeard: new Date(),
+            name: name || NAME_GENERATOR.choose(),
+            ownerID,
+            registrar,
+          });
+
+          device.setStatus(DEVICE_STATUS_MAP.READY);
+
+          this.publishSpecialEvent(
+            SYSTEM_EVENT_NAMES.SPARK_STATUS,
+            'online',
+            deviceID,
+            ownerID,
+            false,
+          );
+
+          // TODO
+          // we may update attributes only on disconnect, but currently
+          // removing update here can break claim/provision flow
+          // so need to test carefully before doing this.
+          await this._deviceAttributeRepository.updateByID(
+            deviceID,
+            device.getAttributes(),
+          );
+
+          // Send app-hash if this is a new app firmware
+          if (!existingAttributes || appHash !== existingAttributes.appHash) {
+            this.publishSpecialEvent(
+              SYSTEM_EVENT_NAMES.APP_HASH,
+              appHash,
+              deviceID,
+              ownerID,
+              false,
+            );
+          }
         } catch (error) {
           device.disconnect(
-            `Error during connection: ${error}`,
+            `Error during connection: ${error}: ${error.stack}`,
           );
         }
       });
     } catch (error) {
-      logger.error(`Device startup failed: ${error.message}`);
+      logger.error({ err: error }, 'Device startup failed');
     }
   };
 
-  _onDeviceDisconnect = async (
-    device: Device,
-  ): Promise<void> => {
-    const deviceID = device.getID();
+  _onDeviceDisconnect = async (device: Device): Promise<void> => {
+    const attributes = device.getAttributes();
+    const { deviceID, ownerID } = attributes;
 
     const newDevice = this._devicesById.get(deviceID);
     const connectionKey = device.getConnectionKey();
@@ -310,25 +377,23 @@ class DeviceServer {
     this._devicesById.delete(deviceID);
     this._eventPublisher.unsubscribeBySubscriberID(deviceID);
 
-    const deviceAttributes =
-      await this._deviceAttributeRepository.getByID(deviceID);
-
-    await this._deviceAttributeRepository.updateByID(
-      deviceID,
-      { lastHeard: device.ping().lastPing },
-    );
-
-    const ownerID = deviceAttributes && deviceAttributes.ownerID;
+    if (device.getStatus() === DEVICE_STATUS_MAP.READY) {
+      await this._deviceAttributeRepository.updateByID(deviceID, attributes);
+    }
 
     this.publishSpecialEvent(
       SYSTEM_EVENT_NAMES.SPARK_STATUS,
       'offline',
       deviceID,
       ownerID,
+      false,
     );
     logger.warn(
-      `Session ended for device with ID: ${deviceID} with connectionKey: ` +
-      `${connectionKey || 'no connection key'}`,
+      {
+        connectionKey,
+        deviceID,
+      },
+      'Session ended for Device',
     );
   };
 
@@ -344,69 +409,69 @@ class DeviceServer {
     );
   };
 
-  _onDeviceReady = async (device: Device): Promise<void> => {
-    try {
-      logger.log('Device online!');
-      let uuid;
-      const deviceID = device.getID();
-
-      const existingAttributes =
-        await this._deviceAttributeRepository.getByID(deviceID);
-      const ownerID = existingAttributes && existingAttributes.ownerID;
-
-      this.publishSpecialEvent(
-        SYSTEM_EVENT_NAMES.SPARK_STATUS,
-        'online',
-        deviceID,
-        ownerID,
-      );
-
-      const description = await device.getDescription();
-      // const { uuid } = FirmwareManager.getAppModule(
-      //   description.systemInformation,
-      // );
-      try {
-        uuid = FirmwareManager.getAppModule(
-          description.systemInformation,
-        )[0];
-      } catch (uuidErr) {
-        uuid = 'none';
-      }
-
-      await this._deviceAttributeRepository.updateByID(
-        deviceID,
-        {
-          name: NAME_GENERATOR.choose(),
-          ...existingAttributes,
-          appHash: uuid,
-          deviceID,
-          ip: device.getRemoteIPAddress(),
-          lastHeard: new Date(),
-          particleProductId: description.productID,
-          productFirmwareVersion: description.firmwareVersion,
-        },
-      );
-
-      // Send app-hash if this is a new app firmware
-      // if (!existingAttributes || uuid !== existingAttributes.appHash) {
-      if(
-        description.productID !== 3 &&
-        (
-          !existingAttributes ||
-          uuid !== existingAttributes.appHash
-        )
-      ){
-        this.publishSpecialEvent(
-          SYSTEM_EVENT_NAMES.APP_HASH,
-          uuid,
-          deviceID,
-          ownerID,
-        );
-      }
-    } catch (error) {
-      logger.error(error);
-    }
-  };
+  // _onDeviceReady = async (device: Device): Promise<void> => {
+  //   try {
+  //     logger.log('Device online!');
+  //     let uuid;
+  //     const deviceID = device.getID();
+  //
+  //     const existingAttributes =
+  //       await this._deviceAttributeRepository.getByID(deviceID);
+  //     const ownerID = existingAttributes && existingAttributes.ownerID;
+  //
+  //     this.publishSpecialEvent(
+  //       SYSTEM_EVENT_NAMES.SPARK_STATUS,
+  //       'online',
+  //       deviceID,
+  //       ownerID,
+  //     );
+  //
+  //     const description = await device.getDescription();
+  //     // const { uuid } = FirmwareManager.getAppModule(
+  //     //   description.systemInformation,
+  //     // );
+  //     try {
+  //       uuid = FirmwareManager.getAppModule(
+  //         description.systemInformation,
+  //       )[0];
+  //     } catch (uuidErr) {
+  //       uuid = 'none';
+  //     }
+  //
+  //     await this._deviceAttributeRepository.updateByID(
+  //       deviceID,
+  //       {
+  //         name: NAME_GENERATOR.choose(),
+  //         ...existingAttributes,
+  //         appHash: uuid,
+  //         deviceID,
+  //         ip: device.getRemoteIPAddress(),
+  //         lastHeard: new Date(),
+  //         particleProductId: description.productID,
+  //         productFirmwareVersion: description.firmwareVersion,
+  //       },
+  //     );
+  //
+  //     // Send app-hash if this is a new app firmware
+  //     // if (!existingAttributes || uuid !== existingAttributes.appHash) {
+  //     if(
+  //       description.productID !== 3 &&
+  //       (
+  //         !existingAttributes ||
+  //         uuid !== existingAttributes.appHash
+  //       )
+  //     ){
+  //       this.publishSpecialEvent(
+  //         SYSTEM_EVENT_NAMES.APP_HASH,
+  //         uuid,
+  //         deviceID,
+  //         ownerID,
+  //       );
+  //     }
+  //   } catch (error) {
+  //     logger.error(error);
+  //   }
+  // };
 
   _onDeviceSentMessage = async (
     packet: CoapPacket,
@@ -414,20 +479,20 @@ class DeviceServer {
     device: Device,
   ): Promise<void> => {
     try {
-      const deviceID = device.getID();
-      const deviceAttributes =
-        await this._deviceAttributeRepository.getByID(deviceID);
-      const ownerID = deviceAttributes && deviceAttributes.ownerID;
+      await device.hasStatus(DEVICE_STATUS_MAP.READY);
+      const { deviceID, name, ownerID } = device.getAttributes();
 
-      const eventData = {
+      const eventData: EventData = {
         connectionID: device.getConnectionKey(),
         data: packet.payload.toString('utf8'),
         deviceID,
-        isPublic,
         name: CoapMessages.getUriPath(packet).substr(3),
         ttl: CoapMessages.getMaxAge(packet),
       };
-
+      const publishOptions: PublishOptions = {
+        isInternal: false,
+        isPublic,
+      };
       const eventName = eventData.name.toLowerCase();
 
       let shouldSwallowEvent = false;
@@ -438,11 +503,10 @@ class DeviceServer {
         // These should always be private but let's make sure. This way
         // if you are listening to a specific device you only see the system
         // events from it.
-        eventData.isPublic = false;
+        publishOptions.isPublic = false;
 
         shouldSwallowEvent = !SPECIAL_EVENTS.some(
-          (specialEvent: string): boolean =>
-            eventName.startsWith(specialEvent),
+          (specialEvent: string): boolean => eventName.startsWith(specialEvent),
         );
         if (shouldSwallowEvent) {
           device.sendReply('EventAck', packet.messageId);
@@ -450,7 +514,10 @@ class DeviceServer {
       }
 
       if (!shouldSwallowEvent && ownerID) {
-        this._eventPublisher.publish({ ...eventData, userID: ownerID });
+        this._eventPublisher.publish(
+          { ...eventData, userID: ownerID },
+          publishOptions,
+        );
       }
 
       if (eventName.startsWith(SYSTEM_EVENT_NAMES.CLAIM_CODE)) {
@@ -463,15 +530,17 @@ class DeviceServer {
           device.getRemoteIPAddress(),
           deviceID,
           ownerID,
+          false,
         );
       }
 
-      if (eventName.startsWith(SYSTEM_EVENT_NAMES.GET_NAME) && deviceAttributes) {
+      if (eventName.startsWith(SYSTEM_EVENT_NAMES.GET_NAME)) {
         this.publishSpecialEvent(
           SYSTEM_EVENT_NAMES.GET_NAME,
-          deviceAttributes.name,
+          name,
           deviceID,
           ownerID,
+          false,
         );
       }
 
@@ -486,6 +555,7 @@ class DeviceServer {
           cryptoString,
           deviceID,
           ownerID,
+          false,
         );
       }
 
@@ -502,11 +572,14 @@ class DeviceServer {
           eventData.data,
           deviceID,
           ownerID,
+          false,
         );
       }
 
       if (eventName.startsWith(SYSTEM_EVENT_NAMES.MAX_BINARY)) {
-        device.setMaxBinarySize(Number.parseInt(nullthrows(eventData.data), 10));
+        device.setMaxBinarySize(
+          Number.parseInt(nullthrows(eventData.data), 10),
+        );
       }
 
       if (eventName.startsWith(SYSTEM_EVENT_NAMES.OTA_CHUNK_SIZE)) {
@@ -519,13 +592,11 @@ class DeviceServer {
           eventData.data,
           deviceID,
           ownerID,
+          false,
         );
 
         if (this._areSystemFirmwareAutoupdatesEnabled) {
-          await this._updateDeviceSystemFirmware(
-            device,
-            ownerID,
-          );
+          await this._updateDeviceSystemFirmware(device);
         }
       }
 
@@ -536,7 +607,7 @@ class DeviceServer {
         // if device version is old, do OTA update with patch
       }
     } catch (error) {
-      logger.error(error);
+      logger.error({ err: error }, 'Error');
     }
   };
 
@@ -544,32 +615,33 @@ class DeviceServer {
     packet: CoapPacket,
     device: Device,
   ): Promise<void> => {
+    await device.hasStatus(DEVICE_STATUS_MAP.READY);
     const claimCode = packet.payload.toString('utf8');
-    const deviceID = device.getID();
-    const deviceAttributes =
-      await this._deviceAttributeRepository.getByID(deviceID);
+    const {
+      claimCode: previousClaimCode,
+      deviceID,
+      ownerID,
+    } = device.getAttributes();
 
-    if (
-      !deviceAttributes ||
-      deviceAttributes.ownerID ||
-      deviceAttributes.claimCode === claimCode
-    ) {
+    if (ownerID || claimCode === previousClaimCode) {
       return;
     }
 
-    const claimRequestUserID =
-      this._claimCodeManager.getUserIDByClaimCode(claimCode);
+    const claimRequestUserID = this._claimCodeManager.getUserIDByClaimCode(
+      claimCode,
+    );
     if (!claimRequestUserID) {
       return;
     }
 
-    await this._deviceAttributeRepository.updateByID(
-      deviceID,
-      {
-        claimCode,
-        ownerID: claimRequestUserID,
-      },
-    );
+    device.updateAttributes({
+      claimCode,
+      ownerID: claimRequestUserID,
+    });
+    await this._deviceAttributeRepository.updateByID(deviceID, {
+      claimCode,
+      ownerID: claimRequestUserID,
+    });
 
     this._claimCodeManager.removeClaimCode(claimCode);
   };
@@ -578,16 +650,17 @@ class DeviceServer {
     packet: CoapPacket,
     device: Device,
   ): Promise<void> => {
+    await device.hasStatus(DEVICE_STATUS_MAP.READY);
+    const deviceAttributes = device.getAttributes();
+    const deviceID = deviceAttributes.deviceID;
+    let ownerID = deviceAttributes.ownerID;
+
     // uri -> /e/?u    --> firehose for all my devices
     // uri -> /e/ (deviceid in body)   --> allowed
     // uri -> /e/    --> not allowed (no global firehose for cores, kthxplox)
     // uri -> /e/event_name?u    --> all my devices
     // uri -> /e/event_name?u (deviceid)    --> deviceid?
     const messageName = CoapMessages.getUriPath(packet).substr(3);
-    const deviceID = device.getID();
-    const deviceAttributes =
-      await this._deviceAttributeRepository.getByID(deviceID);
-    let ownerID = deviceAttributes && deviceAttributes.ownerID;
     const query = CoapMessages.getUriQuery(packet);
     const isFromMyDevices = !!query.match('u');
 
@@ -596,44 +669,45 @@ class DeviceServer {
       return;
     }
 
-    logger.log(
-      'Subscribe Request:\r\n',
+    logger.info(
       {
         deviceID,
         isFromMyDevices,
         messageName,
       },
+      'Subscribe Request',
     );
 
     device.sendReply('SubscribeAck', packet.messageId);
 
     process.nextTick(() => {
       if (!ownerID) {
-        logger.log(
-          `device with ID ${deviceID} wasn't subscribed to ` +
-            `${messageName} event: the device is unclaimed.`,
+        logger.info(
+          {
+            deviceID,
+            messageName,
+          },
+          'device wasnt subscribed to event: the device is unclaimed.',
         );
         ownerID = '--unclaimed--';
       }
 
       const isSystemEvent = messageName.startsWith('spark');
 
-      this._eventPublisher.subscribe(
-        messageName,
-        device.onDeviceEvent,
-        {
-          filterOptions: {
-            connectionID: isSystemEvent ? device.getConnectionKey() : undefined,
-            mydevices: isFromMyDevices,
-            userID: ownerID,
-          },
-          subscriberID: deviceID,
+      this._eventPublisher.subscribe(messageName, device.onDeviceEvent, {
+        filterOptions: {
+          connectionID: isSystemEvent ? device.getConnectionKey() : undefined,
+          mydevices: isFromMyDevices,
+          userID: ownerID,
         },
-      );
+        subscriberID: deviceID,
+      });
     });
   };
 
-  _onSparkServerCallDeviceFunctionRequest = async (event: Event): Promise<void> => {
+  _onSparkServerCallDeviceFunctionRequest = async (
+    event: Event,
+  ): Promise<void> => {
     const {
       deviceID,
       functionArguments,
@@ -646,77 +720,104 @@ class DeviceServer {
         throw new Error('Could not get device for ID');
       }
 
-      this._eventPublisher.publish({
-        context: await device.callFunction(functionName, functionArguments),
-        isPublic: false,
-        name: responseEventName,
-      });
+      this._eventPublisher.publish(
+        {
+          context: await device.callFunction(functionName, functionArguments),
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     } catch (error) {
-      this._eventPublisher.publish({
-        context: { error },
-        isPublic: false,
-        name: responseEventName,
-      });
+      this._eventPublisher.publish(
+        {
+          context: { error },
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     }
   };
 
   _onSparkServerFlashDeviceRequest = async (event: Event): Promise<void> => {
-    const {
-      deviceID,
-      fileBuffer,
-      responseEventName,
-    } = nullthrows(event.context);
+    const { deviceID, fileBuffer, responseEventName } = nullthrows(
+      event.context,
+    );
     try {
       const device = this.getDevice(deviceID);
       if (!device) {
         throw new Error('Could not get device for ID');
       }
 
-      this._eventPublisher.publish({
-        context: await device.flash(fileBuffer),
-        isPublic: false,
-        name: responseEventName,
-      });
+      this._eventPublisher.publish(
+        {
+          context: await device.flash(fileBuffer),
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     } catch (error) {
-      this._eventPublisher.publish({
-        context: { error },
-        isPublic: false,
-        name: responseEventName,
-      });
+      this._eventPublisher.publish(
+        {
+          context: { error },
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     }
   };
 
-  _onSparkServerGetDeviceDescriptionRequest = async (event: Event): Promise<void> => {
-    const {
-      deviceID,
-      responseEventName,
-    } = nullthrows(event.context);
+  _onSparkServerGetDeviceAttributes = async (event: Event): Promise<void> => {
+    const { deviceID, responseEventName } = nullthrows(event.context);
+
     try {
       const device = this.getDevice(deviceID);
       if (!device) {
         throw new Error('Could not get device for ID');
       }
+      await device.hasStatus(DEVICE_STATUS_MAP.READY);
 
-      this._eventPublisher.publish({
-        context: await device.getDescription(),
-        isPublic: false,
-        name: responseEventName,
-      });
+      this._eventPublisher.publish(
+        {
+          context: device.getAttributes(),
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     } catch (error) {
-      this._eventPublisher.publish({
-        context: { error },
-        isPublic: false,
-        name: responseEventName,
-      });
+      this._eventPublisher.publish(
+        {
+          context: { error },
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     }
   };
 
-  _onSparkServerGetDeviceVariableValueRequest = async (event: Event): Promise<void> => {
-    const {
-      deviceID,
-      responseEventName,
-      variableName,
-    } = nullthrows(event.context);
+  _onSparkServerGetDeviceVariableValueRequest = async (
+    event: Event,
+  ): Promise<void> => {
+    const { deviceID, responseEventName, variableName } = nullthrows(
+      event.context,
+    );
 
     try {
       const device = this.getDevice(deviceID);
@@ -724,17 +825,27 @@ class DeviceServer {
         throw new Error('Could not get device for ID');
       }
 
-      this._eventPublisher.publish({
-        context: { result: await device.getVariableValue(variableName) },
-        isPublic: false,
-        name: responseEventName,
-      });
+      this._eventPublisher.publish(
+        {
+          context: { result: await device.getVariableValue(variableName) },
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     } catch (error) {
-      this._eventPublisher.publish({
-        context: { error },
-        isPublic: false,
-        name: responseEventName,
-      });
+      this._eventPublisher.publish(
+        {
+          context: { error },
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     }
   };
 
@@ -745,23 +856,26 @@ class DeviceServer {
     const pingObject = device
       ? device.ping()
       : {
-        connected: false,
-        lastPing: null,
-      };
+          connected: false,
+          lastPing: null,
+        };
 
-    this._eventPublisher.publish({
-      context: pingObject,
-      isPublic: false,
-      name: responseEventName,
-    });
+    this._eventPublisher.publish(
+      {
+        context: pingObject,
+        name: responseEventName,
+      },
+      {
+        isInternal: true,
+        isPublic: false,
+      },
+    );
   };
 
   _onSparkServerRaiseYourHandRequest = async (event: Event): Promise<void> => {
-    const {
-      deviceID,
-      responseEventName,
-      shouldShowSignal,
-    } = nullthrows(event.context);
+    const { deviceID, responseEventName, shouldShowSignal } = nullthrows(
+      event.context,
+    );
 
     try {
       const device = this.getDevice(deviceID);
@@ -769,28 +883,80 @@ class DeviceServer {
         throw new Error('Could not get device for ID');
       }
 
-      this._eventPublisher.publish({
-        context: await device.raiseYourHand(shouldShowSignal),
-        isPublic: false,
-        name: responseEventName,
-      });
+      await device.hasStatus(DEVICE_STATUS_MAP.READY);
+
+      this._eventPublisher.publish(
+        {
+          context: await device.raiseYourHand(shouldShowSignal),
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     } catch (error) {
-      this._eventPublisher.publish({
-        context: { error },
-        isPublic: false,
-        name: responseEventName,
-      });
+      this._eventPublisher.publish(
+        {
+          context: { error },
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
     }
   };
 
-  getDevice = (deviceID: string): ?Device =>
-    this._devicesById.get(deviceID);
+  _onSparkServerUpdateDeviceAttributesRequest = async (
+    event: Event,
+  ): Promise<void> => {
+    const { attributes, deviceID, responseEventName } = nullthrows(
+      event.context,
+    );
+
+    try {
+      const device = this.getDevice(deviceID);
+      if (!device) {
+        throw new Error('Could not get device for ID');
+      }
+
+      await device.hasStatus(DEVICE_STATUS_MAP.READY);
+      device.updateAttributes({ ...attributes });
+
+      this._eventPublisher.publish(
+        {
+          context: await device.getAttributes(),
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
+    } catch (error) {
+      this._eventPublisher.publish(
+        {
+          context: { error },
+          name: responseEventName,
+        },
+        {
+          isInternal: true,
+          isPublic: false,
+        },
+      );
+    }
+  };
+
+  getDevice = (deviceID: string): ?Device => this._devicesById.get(deviceID);
 
   publishSpecialEvent = (
     eventName: string,
-    data: string,
+    data?: string,
     deviceID: string,
     userID: ?string,
+    isInternal?: boolean = false,
   ) => {
     if (!userID) {
       return;
@@ -798,14 +964,13 @@ class DeviceServer {
     const eventData = {
       data,
       deviceID,
-      isPublic: false,
       name: eventName,
       userID,
     };
     process.nextTick(() => {
-      this._eventPublisher.publish(eventData);
+      this._eventPublisher.publish(eventData, { isInternal, isPublic: false });
     });
-  }
+  };
 }
 
 export default DeviceServer;

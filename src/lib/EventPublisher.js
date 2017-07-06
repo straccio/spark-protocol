@@ -18,7 +18,7 @@
 *
 */
 
-import type { Event, EventData } from '../types';
+import type { Event, EventData, PublishOptions } from '../types';
 
 import EventEmitter from 'events';
 import nullthrows from 'nullthrows';
@@ -26,16 +26,17 @@ import uuid from 'uuid';
 import settings from '../settings';
 
 export const getRequestEventName = (eventName: string): string =>
- `${eventName}/request`;
+  `${eventName}/request`;
 
-const ALL_EVENTS = '*all*';
 const LISTEN_FOR_RESPONSE_TIMEOUT = 15000;
 
 type FilterOptions = {
   connectionID?: ?string,
   deviceID?: string,
+  listenToBroadcastedEvents?: boolean,
+  listenToInternalEvents?: boolean,
   mydevices?: boolean,
-  userID: string,
+  userID?: string,
 };
 
 type SubscriptionOptions = {
@@ -44,7 +45,7 @@ type SubscriptionOptions = {
   subscriberID?: string,
   subscriptionTimeout?: number,
   timeoutHandler?: () => void,
-}
+};
 
 type Subscription = {
   eventNamePrefix: string,
@@ -58,64 +59,70 @@ class EventPublisher extends EventEmitter {
 
   publish = (
     eventData: EventData,
+    options: ?PublishOptions = {
+      isInternal: false,
+      isPublic: false,
+    },
   ) => {
-    const ttl = (eventData.ttl && eventData.ttl > 0)
-      ? eventData.ttl
-      : settings.DEFAULT_EVENT_TTL;
+    const ttl =
+      eventData.ttl && eventData.ttl > 0
+        ? eventData.ttl
+        : settings.DEFAULT_EVENT_TTL;
 
     const event: Event = {
       ...eventData,
+      ...options,
       publishedAt: new Date(),
       ttl,
     };
 
-    // TODO - this needs to be put on next tick.
-    this._emitWithPrefix(eventData.name, event);
-    this.emit(ALL_EVENTS, event);
+    setImmediate(() => {
+      this._emitWithPrefix(eventData.name, event);
+      this.emit('*', event);
+    });
   };
 
   publishAndListenForResponse = async (
     eventData: EventData,
   ): Promise<Object> => {
     const eventID = uuid();
-    const requestEventName = `${getRequestEventName(eventData.name)}/${eventID}`;
+    const requestEventName = `${getRequestEventName(
+      eventData.name,
+    )}/${eventID}`;
     const responseEventName = `${eventData.name}/response/${eventID}`;
 
     return new Promise(
-      (
-        resolve: (event: Event) => void,
-        reject: (error: Error) => void,
-      ) => {
+      (resolve: (event: Event) => void, reject: (error: Error) => void) => {
         const responseListener = (event: Event): void =>
           resolve(nullthrows(event.context));
 
-        this.subscribe(
-          responseEventName,
-          responseListener,
+        this.subscribe(responseEventName, responseListener, {
+          once: true,
+          subscriptionTimeout: LISTEN_FOR_RESPONSE_TIMEOUT,
+          timeoutHandler: (): void =>
+            reject(new Error(`Response timeout for event: ${eventData.name}`)),
+        });
+
+        this.publish(
           {
-            once: true,
-            subscriptionTimeout: LISTEN_FOR_RESPONSE_TIMEOUT,
-            timeoutHandler: (): void => reject(
-              new Error(`Response timeout for event: ${eventData.name}`),
-            ),
+            ...eventData,
+            context: {
+              ...eventData.context,
+              responseEventName,
+            },
+            name: requestEventName,
+          },
+          {
+            isInternal: true,
+            isPublic: false,
           },
         );
-
-        this.publish({
-          ...eventData,
-          context: {
-            ...eventData.context,
-            responseEventName,
-          },
-          isPublic: false,
-          name: requestEventName,
-        });
       },
     );
   };
 
   subscribe = (
-    eventNamePrefix: string = ALL_EVENTS,
+    eventNamePrefix: string = '*',
     eventHandler: (event: Event) => void | Promise<void>,
     options?: SubscriptionOptions = {},
   ): string => {
@@ -135,104 +142,108 @@ class EventPublisher extends EventEmitter {
       ? this._filterEvents(eventHandler, filterOptions)
       : eventHandler;
 
-    this._subscriptionsByID.set(
-      subscriptionID,
-      {
-        eventNamePrefix,
-        id: subscriptionID,
-        listener,
-        options,
-      },
-    );
+    this._subscriptionsByID.set(subscriptionID, {
+      eventNamePrefix,
+      id: subscriptionID,
+      listener,
+      options,
+    });
 
     if (subscriptionTimeout) {
-      const timeout = setTimeout(
-        () => {
-          this.unsubscribe(subscriptionID);
-          if (timeoutHandler) {
-            timeoutHandler();
-          }
-        },
-        subscriptionTimeout,
-      );
-
+      const timeout = setTimeout(() => {
+        this.unsubscribe(subscriptionID);
+        if (timeoutHandler) {
+          timeoutHandler();
+        }
+      }, subscriptionTimeout);
       this.once(eventNamePrefix, (): void => clearTimeout(timeout));
     }
 
     if (once) {
-      this.once(eventNamePrefix, listener);
+      this.once(eventNamePrefix, (event: Event) => {
+        this._subscriptionsByID.delete(subscriptionID);
+        listener(event);
+      });
     } else {
       this.on(eventNamePrefix, listener);
     }
-
     return subscriptionID;
   };
 
   unsubscribe = (subscriptionID: string) => {
-    const {
-      eventNamePrefix,
-      listener,
-    } = nullthrows(this._subscriptionsByID.get(subscriptionID));
-
-    this.removeListener(eventNamePrefix, listener);
+    const subscription: ?Subscription = this._subscriptionsByID.get(
+      subscriptionID,
+    );
+    if (!subscription) {
+      return;
+    }
+    this.removeListener(subscription.eventNamePrefix, subscription.listener);
     this._subscriptionsByID.delete(subscriptionID);
   };
 
   unsubscribeBySubscriberID = (subscriberID: string) => {
-    this._subscriptionsByID
-      .forEach((subscription: Subscription) => {
-        if (subscription.options.subscriberID === subscriberID) {
-          this.unsubscribe(subscription.id);
-        }
-      });
+    this._subscriptionsByID.forEach((subscription: Subscription) => {
+      if (subscription.options.subscriberID === subscriberID) {
+        this.unsubscribe(subscription.id);
+      }
+    });
   };
 
   _emitWithPrefix = (eventName: string, event: Event) => {
     this.eventNames()
-      .filter(
-        (eventNamePrefix: string): boolean =>
-          eventName.startsWith(eventNamePrefix),
+      .filter((eventNamePrefix: string): boolean =>
+        eventName.startsWith(eventNamePrefix),
       )
-      .forEach(
-        (eventNamePrefix: string): boolean =>
-          this.emit(eventNamePrefix, event),
+      .forEach((eventNamePrefix: string): boolean =>
+        this.emit(eventNamePrefix, event),
       );
   };
 
   _filterEvents = (
     eventHandler: (event: Event) => void | Promise<void>,
     filterOptions: FilterOptions,
-  ): (event: Event) => void =>
-    (event: Event) => {
-      // filter private events from another devices
-      if (!event.isPublic && filterOptions.userID !== event.userID) {
-        return;
-      }
+  ): ((event: Event) => void) => (event: Event) => {
+    if (event.isInternal && filterOptions.listenToInternalEvents === false) {
+      return;
+    }
+    // filter private events from another devices
+    if (
+      filterOptions.userID &&
+      !event.isPublic &&
+      filterOptions.userID !== event.userID
+    ) {
+      return;
+    }
 
-      // filter private events with wrong connectionID
-      if (
-        !event.isPublic &&
-        filterOptions.connectionID &&
-        event.connectionID !== filterOptions.connectionID
-      ) {
-        return;
-      }
+    // filter private events with wrong connectionID
+    if (
+      !event.isPublic &&
+      filterOptions.connectionID &&
+      event.connectionID !== filterOptions.connectionID
+    ) {
+      return;
+    }
 
-      // filter mydevices events
-      if (filterOptions.mydevices && filterOptions.userID !== event.userID) {
-        return;
-      }
+    // filter mydevices events
+    if (filterOptions.mydevices && filterOptions.userID !== event.userID) {
+      return;
+    }
 
-      // filter event by deviceID
-      if (
-        filterOptions.deviceID &&
-        event.deviceID !== filterOptions.deviceID
-      ) {
-        return;
-      }
+    // filter event by deviceID
+    if (filterOptions.deviceID && event.deviceID !== filterOptions.deviceID) {
+      return;
+    }
 
-      process.nextTick((): void | Promise<void> => eventHandler(event));
-    };
+    // filter broadcasted events
+    if (
+      filterOptions.listenToBroadcastedEvents === false &&
+      event.broadcasted
+    ) {
+      return;
+    }
+
+    process.nextTick((): void | Promise<void> => eventHandler(event));
+  };
 }
 
 export default EventPublisher;

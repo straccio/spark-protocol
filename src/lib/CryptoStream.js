@@ -20,8 +20,9 @@
 
 import { Transform } from 'stream';
 import crypto from 'crypto';
-import logger from '../lib/logger';
 import settings from '../settings';
+import Logger from '../lib/logger';
+const logger = Logger.createModuleLogger(module);
 
 export type CryptoStreamType = 'decrypt' | 'encrypt';
 
@@ -51,7 +52,8 @@ class CryptoStream extends Transform {
   ) => {
     if (!chunk.length) {
       logger.error(
-        'CryptoStream transform error: Chunk didn\'t have any length',
+        { length: chunk.length },
+        "CryptoStream transform error: Chunk didn't have any length",
       );
       callback();
       return;
@@ -60,9 +62,10 @@ class CryptoStream extends Transform {
     try {
       const data = ((chunk: any): Buffer);
       const cipherParams = [settings.CRYPTO_ALGORITHM, this._key, this._iv];
-      const cipher = this._streamType === 'encrypt'
-        ? crypto.createCipheriv(...cipherParams)
-        : crypto.createDecipheriv(...cipherParams);
+      const cipher =
+        this._streamType === 'encrypt'
+          ? crypto.createCipheriv(...cipherParams)
+          : crypto.createDecipheriv(...cipherParams);
 
       const transformedData = cipher.update(data);
       const extraData = cipher.final();
@@ -71,18 +74,16 @@ class CryptoStream extends Transform {
         transformedData.length + extraData.length,
       );
 
-      const ivContainer = this._streamType === 'encrypt'
-        ? output
-        : data;
+      const ivContainer = this._streamType === 'encrypt' ? output : data;
       this._iv = new Buffer(16);
       ivContainer.copy(this._iv, 0, 0, 16);
 
       this.push(output);
     } catch (error) {
-      logger.error(`CryptoStream transform error: ${error}`);
+      logger.error({ err: error }, 'CryptoStream transform error');
     }
     callback();
-  }
+  };
 }
 
 export default CryptoStream;

@@ -109,6 +109,11 @@ var FirmwareManager = (_temp = _class = function () {
       var platform = _settings4.default.knownPlatforms[platformID.toString()];
       var key = SPECIFICATION_KEY_BY_PLATFORM.get(platform);
 
+      // GCC Platform skip OTA Update Config
+      if (platformID === 3) {
+        return null;
+      }
+
       if (!key) {
         return null;
       }
@@ -136,9 +141,18 @@ var FirmwareManager = (_temp = _class = function () {
           case 0:
             parser = new _binaryVersionReader.HalDescribeParser();
             platformID = systemInformation.p;
-            modules = parser.getModules(systemInformation
+
+            // GCC Platform skip OTA System
+            // if(platformID === 3){
+            //   return null;
+            // }
+            //
+            // const modules = parser.getModules(systemInformation)
+
+            modules = parser.getModules(systemInformation)
+
             // Filter so we only have the system modules
-            ).filter(function (module) {
+            .filter(function (module) {
               return module.func === 's';
             });
 
@@ -202,9 +216,9 @@ var FirmwareManager = (_temp = _class = function () {
   };
 }(), _class.getAppModule = function (systemInformation) {
   var parser = new _binaryVersionReader.HalDescribeParser();
-  return (0, _nullthrows2.default)(parser.getModules(systemInformation
+  return (0, _nullthrows2.default)(parser.getModules(systemInformation)
   // Filter so we only have the app modules
-  ).find(function (module) {
+  .find(function (module) {
     return module.func === 'u';
   }));
 }, _temp);
