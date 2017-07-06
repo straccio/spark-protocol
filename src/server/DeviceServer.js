@@ -286,14 +286,15 @@ class DeviceServer {
           this._devicesById.set(deviceID, device);
 
           const systemInformation = await device.completeProtocolInitialization();
-          // const appHash="";
-          // try {
-          const { uuid: appHash } = FirmwareManager.getAppModule(
-            systemInformation,
-          );
-          // }catch (ignore){
 
-          // }
+          let appModules;
+          try {
+            appModules = FirmwareManager.getAppModule(systemInformation);
+          } catch (ignore) {
+            appModules = { uuid: 'none' };
+          }
+
+          const { uuid: appHash } = appModules;
 
           const existingAttributes = await this._deviceAttributeRepository.getByID(
             deviceID,
