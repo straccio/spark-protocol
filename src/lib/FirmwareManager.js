@@ -39,13 +39,6 @@ class FirmwareManager {
     const parser = new HalDescribeParser();
     const platformID = systemInformation.p;
 
-    // GCC Platform skip OTA System
-    // if(platformID === 3){
-    //   return null;
-    // }
-    //
-    // const modules = parser.getModules(systemInformation)
-
     const modules = parser
       .getModules(systemInformation)
       // Filter so we only have the system modules
