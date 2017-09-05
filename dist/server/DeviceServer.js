@@ -205,7 +205,7 @@ var DeviceServer = function () {
                 }, 'Connection');
 
                 process.nextTick((0, _asyncToGenerator3.default)(_regenerator2.default.mark(function _callee6() {
-                  var existingConnection, systemInformation, _FirmwareManager$getA, appHash, existingAttributes, _ref8, claimCode, currentBuildTarget, imei, isCellular, last_iccid, name, ownerID, registrar;
+                  var existingConnection, systemInformation, appModules, _appModules, appHash, existingAttributes, _ref8, claimCode, currentBuildTarget, imei, isCellular, last_iccid, name, ownerID, registrar;
 
                   return _regenerator2.default.wrap(function _callee6$(_context6) {
                     while (1) {
@@ -319,11 +319,19 @@ var DeviceServer = function () {
 
                         case 13:
                           systemInformation = _context6.sent;
-                          _FirmwareManager$getA = _FirmwareManager2.default.getAppModule(systemInformation), appHash = _FirmwareManager$getA.uuid;
-                          _context6.next = 17;
+                          appModules = void 0;
+
+                          try {
+                            appModules = _FirmwareManager2.default.getAppModule(systemInformation);
+                          } catch (ignore) {
+                            appModules = { uuid: 'none' };
+                          }
+
+                          _appModules = appModules, appHash = _appModules.uuid;
+                          _context6.next = 19;
                           return _this._deviceAttributeRepository.getByID(deviceID);
 
-                        case 17:
+                        case 19:
                           existingAttributes = _context6.sent;
                           _ref8 = existingAttributes || {}, claimCode = _ref8.claimCode, currentBuildTarget = _ref8.currentBuildTarget, imei = _ref8.imei, isCellular = _ref8.isCellular, last_iccid = _ref8.last_iccid, name = _ref8.name, ownerID = _ref8.ownerID, registrar = _ref8.registrar;
 
@@ -349,30 +357,30 @@ var DeviceServer = function () {
                           // we may update attributes only on disconnect, but currently
                           // removing update here can break claim/provision flow
                           // so need to test carefully before doing this.
-                          _context6.next = 24;
+                          _context6.next = 26;
                           return _this._deviceAttributeRepository.updateByID(deviceID, device.getAttributes());
 
-                        case 24:
+                        case 26:
 
                           // Send app-hash if this is a new app firmware
                           if (!existingAttributes || appHash !== existingAttributes.appHash) {
                             _this.publishSpecialEvent(_Device.SYSTEM_EVENT_NAMES.APP_HASH, appHash, deviceID, ownerID, false);
                           }
-                          _context6.next = 30;
+                          _context6.next = 32;
                           break;
 
-                        case 27:
-                          _context6.prev = 27;
+                        case 29:
+                          _context6.prev = 29;
                           _context6.t0 = _context6['catch'](0);
 
                           device.disconnect('Error during connection: ' + _context6.t0 + ': ' + _context6.t0.stack);
 
-                        case 30:
+                        case 32:
                         case 'end':
                           return _context6.stop();
                       }
                     }
-                  }, _callee6, _this, [[0, 27]]);
+                  }, _callee6, _this, [[0, 29]]);
                 })));
                 _context7.next = 16;
                 break;
@@ -1241,71 +1249,6 @@ var DeviceServer = function () {
         return logger.info({ serverPort: serverPort }, 'Server started');
       });
     }
-
-    // _onDeviceReady = async (device: Device): Promise<void> => {
-    //   try {
-    //     logger.log('Device online!');
-    //     let uuid;
-    //     const deviceID = device.getID();
-    //
-    //     const existingAttributes =
-    //       await this._deviceAttributeRepository.getByID(deviceID);
-    //     const ownerID = existingAttributes && existingAttributes.ownerID;
-    //
-    //     this.publishSpecialEvent(
-    //       SYSTEM_EVENT_NAMES.SPARK_STATUS,
-    //       'online',
-    //       deviceID,
-    //       ownerID,
-    //     );
-    //
-    //     const description = await device.getDescription();
-    //     // const { uuid } = FirmwareManager.getAppModule(
-    //     //   description.systemInformation,
-    //     // );
-    //     try {
-    //       uuid = FirmwareManager.getAppModule(
-    //         description.systemInformation,
-    //       )[0];
-    //     } catch (uuidErr) {
-    //       uuid = 'none';
-    //     }
-    //
-    //     await this._deviceAttributeRepository.updateByID(
-    //       deviceID,
-    //       {
-    //         name: NAME_GENERATOR.choose(),
-    //         ...existingAttributes,
-    //         appHash: uuid,
-    //         deviceID,
-    //         ip: device.getRemoteIPAddress(),
-    //         lastHeard: new Date(),
-    //         particleProductId: description.productID,
-    //         productFirmwareVersion: description.firmwareVersion,
-    //       },
-    //     );
-    //
-    //     // Send app-hash if this is a new app firmware
-    //     // if (!existingAttributes || uuid !== existingAttributes.appHash) {
-    //     if(
-    //       description.productID !== 3 &&
-    //       (
-    //         !existingAttributes ||
-    //         uuid !== existingAttributes.appHash
-    //       )
-    //     ){
-    //       this.publishSpecialEvent(
-    //         SYSTEM_EVENT_NAMES.APP_HASH,
-    //         uuid,
-    //         deviceID,
-    //         ownerID,
-    //       );
-    //     }
-    //   } catch (error) {
-    //     logger.error(error);
-    //   }
-    // };
-
   }]);
   return DeviceServer;
 }();

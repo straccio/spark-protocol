@@ -141,16 +141,7 @@ var FirmwareManager = (_temp = _class = function () {
           case 0:
             parser = new _binaryVersionReader.HalDescribeParser();
             platformID = systemInformation.p;
-
-            // GCC Platform skip OTA System
-            // if(platformID === 3){
-            //   return null;
-            // }
-            //
-            // const modules = parser.getModules(systemInformation)
-
             modules = parser.getModules(systemInformation)
-
             // Filter so we only have the system modules
             .filter(function (module) {
               return module.func === 's';
