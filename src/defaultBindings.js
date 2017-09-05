@@ -8,6 +8,8 @@ import EventPublisher from './lib/EventPublisher';
 import EventProvider from './lib/EventProvider';
 import ClaimCodeManager from './lib/ClaimCodeManager';
 import CryptoManager from './lib/CryptoManager';
+import MockProductDeviceRepository from './repository/MockProductDeviceRepository';
+import MockProductFirmwareRepository from './repository/MockProductFirmwareRepository';
 import ServerKeyFileRepository from './repository/ServerKeyFileRepository';
 import protocolSettings from './settings';
 
@@ -55,13 +57,24 @@ const defaultBindings = (
 
   // Repository
   container.bindClass(
-    'DeviceAttributeRepository',
+    'IDeviceAttributeRepository',
     DeviceAttributeFileRepository,
     ['DEVICE_DIRECTORY'],
   );
-  container.bindClass('DeviceKeyRepository', DeviceKeyFileRepository, [
+  // <<<<<<< HEAD
+  //   container.bindClass('DeviceKeyRepository', DeviceKeyFileRepository, [
+  //     'DEVICE_DIRECTORY',
+  //   ]);
+  //= ======
+  container.bindClass('IDeviceKeyRepository', DeviceKeyFileRepository, [
     'DEVICE_DIRECTORY',
   ]);
+  container.bindClass('IProductDeviceRepository', MockProductDeviceRepository);
+  container.bindClass(
+    'IProductFirmwareRepository',
+    MockProductFirmwareRepository,
+  );
+  // >>>>>>> upstream/dev
   container.bindClass('ServerKeyRepository', ServerKeyFileRepository, [
     'SERVER_KEYS_DIRECTORY',
     'SERVER_KEY_FILENAME',
@@ -72,14 +85,24 @@ const defaultBindings = (
   container.bindClass('EVENT_PROVIDER', EventProvider, ['EventPublisher']);
   container.bindClass('ClaimCodeManager', ClaimCodeManager, []);
   container.bindClass('CryptoManager', CryptoManager, [
-    'DeviceKeyRepository',
+    // <<<<<<< HEAD
+    //     'DeviceKeyRepository',
+    //= ======
+    'IDeviceKeyRepository',
+    // >>>>>>> upstream/dev
     'ServerKeyRepository',
     'SERVER_KEY_PASSWORD',
   ]);
 
   // Device server
   container.bindClass('DeviceServer', DeviceServer, [
-    'DeviceAttributeRepository',
+    // <<<<<<< HEAD
+    //     'DeviceAttributeRepository',
+    // =======
+    'IDeviceAttributeRepository',
+    'IProductDeviceRepository',
+    'IProductFirmwareRepository',
+    // >>>>>>> upstream/dev
     'ClaimCodeManager',
     'CryptoManager',
     'EventPublisher',
