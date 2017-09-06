@@ -367,7 +367,6 @@ class DeviceServer {
           this._devicesById.set(deviceID, device);
 
           const systemInformation = await device.completeProtocolInitialization();
-          // <<<<<<< HEAD
 
           let appModules;
           try {
@@ -377,13 +376,8 @@ class DeviceServer {
           }
 
           const { uuid: appHash } = appModules;
-          //= ======
-          //           const appModule = FirmwareManager.getAppModule(systemInformation);
-          //
-          //           const { uuid: appHash } = appModule;
 
           await this._checkProductFirmwareForUpdate(device /* appModule*/);
-          // >>>>>>> upstream/dev
 
           const existingAttributes = await this._deviceAttributeRepository.getByID(
             deviceID,

@@ -61,11 +61,7 @@ const defaultBindings = (
     DeviceAttributeFileRepository,
     ['DEVICE_DIRECTORY'],
   );
-  // <<<<<<< HEAD
-  //   container.bindClass('DeviceKeyRepository', DeviceKeyFileRepository, [
-  //     'DEVICE_DIRECTORY',
-  //   ]);
-  //= ======
+
   container.bindClass('IDeviceKeyRepository', DeviceKeyFileRepository, [
     'DEVICE_DIRECTORY',
   ]);
@@ -74,7 +70,7 @@ const defaultBindings = (
     'IProductFirmwareRepository',
     MockProductFirmwareRepository,
   );
-  // >>>>>>> upstream/dev
+
   container.bindClass('ServerKeyRepository', ServerKeyFileRepository, [
     'SERVER_KEYS_DIRECTORY',
     'SERVER_KEY_FILENAME',
@@ -85,24 +81,16 @@ const defaultBindings = (
   container.bindClass('EVENT_PROVIDER', EventProvider, ['EventPublisher']);
   container.bindClass('ClaimCodeManager', ClaimCodeManager, []);
   container.bindClass('CryptoManager', CryptoManager, [
-    // <<<<<<< HEAD
-    //     'DeviceKeyRepository',
-    //= ======
     'IDeviceKeyRepository',
-    // >>>>>>> upstream/dev
     'ServerKeyRepository',
     'SERVER_KEY_PASSWORD',
   ]);
 
   // Device server
   container.bindClass('DeviceServer', DeviceServer, [
-    // <<<<<<< HEAD
-    //     'DeviceAttributeRepository',
-    // =======
     'IDeviceAttributeRepository',
     'IProductDeviceRepository',
     'IProductFirmwareRepository',
-    // >>>>>>> upstream/dev
     'ClaimCodeManager',
     'CryptoManager',
     'EventPublisher',
