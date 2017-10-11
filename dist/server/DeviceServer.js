@@ -435,9 +435,6 @@ var DeviceServer = function () {
 
                         case 13:
                           systemInformation = _context7.sent;
-
-                          //<<<<<<< HEAD
-
                           appModules = void 0;
 
                           try {
@@ -447,11 +444,6 @@ var DeviceServer = function () {
                           }
 
                           _appModules = appModules, appHash = _appModules.uuid;
-                          //=======
-                          //           const appModule = FirmwareManager.getAppModule(systemInformation);
-                          //
-                          //           const { uuid: appHash } = appModule;
-
                           _context7.next = 19;
                           return _this._checkProductFirmwareForUpdate(device /* appModule*/);
 

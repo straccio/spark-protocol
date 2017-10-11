@@ -325,9 +325,33 @@ var Handshake = function Handshake(cryptoManager) {
             case 13:
               deviceProvidedPem = _this._convertDERtoPEM(deviceKeyBuffer);
               deviceID = deviceIDBuffer.toString('hex');
+              _context4.next = 17;
+              return _this._cryptoManager.getDevicePublicKey(deviceID);
+
+            case 17:
+              _context4.t1 = _context4.sent;
+              _context4.t0 = _context4.t1 == null;
+
+              if (!_context4.t0) {
+                _context4.next = 21;
+                break;
+              }
+
+              _context4.t0 = deviceProvidedPem;
+
+            case 21:
+              if (!_context4.t0) {
+                _context4.next = 24;
+                break;
+              }
+
+              _context4.next = 24;
+              return _this._cryptoManager.createDevicePublicKey(deviceID, deviceProvidedPem);
+
+            case 24:
               return _context4.abrupt('return', { deviceID: deviceID, deviceProvidedPem: deviceProvidedPem });
 
-            case 16:
+            case 25:
             case 'end':
               return _context4.stop();
           }

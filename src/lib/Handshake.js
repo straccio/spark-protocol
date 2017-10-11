@@ -266,6 +266,16 @@ class Handshake {
     const deviceProvidedPem = this._convertDERtoPEM(deviceKeyBuffer);
     const deviceID = deviceIDBuffer.toString('hex');
 
+    if (
+      (await this._cryptoManager.getDevicePublicKey(deviceID)) == null &&
+      deviceProvidedPem
+    ) {
+      await this._cryptoManager.createDevicePublicKey(
+        deviceID,
+        deviceProvidedPem,
+      );
+    }
+
     return { deviceID, deviceProvidedPem };
   };
 
